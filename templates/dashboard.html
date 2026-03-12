@@ -5,17 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Guardian SIEM v2.0 — Mission Control</title>
     <link rel="stylesheet" href="/static/css/dashboard.css">
-    <!-- Leaflet.js for GeoIP Map -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
 
-<!-- ============ Top Navigation ============ -->
 <nav class="navbar">
     <div class="navbar-brand">
         <span class="shield-icon">🛡️</span>
         Guardian SIEM <span style="font-weight: 400; font-size: 12px; color: var(--text-muted);">v2.0</span>
     </div>
+    
+    <div class="project-view-selector" style="background: #111; padding: 5px 15px; border-radius: 4px; border: 1px solid #333; display: flex; align-items: center; gap: 10px;">
+        <label for="projectSelect" style="color: #00ff00; font-family: monospace; font-size: 0.75rem;">[ CONTEXT ] ></label>
+        <select id="projectSelect" onchange="window.location.href='/?project=' + this.value" 
+                style="background: #000; color: #00ff00; border: none; font-family: monospace; cursor: pointer; outline: none;">
+            <option value="">[ GLOBAL_ALL ]</option>
+            <option value="Default">HOME_SECURITY</option>
+            <option value="Blockchain_Bounty">BLOCKCHAIN_BOUNTY</option>
+        </select>
+    </div>
+
     <div class="navbar-status">
         <div class="status-indicator">
             <span id="status-dot" class="status-dot"></span>
@@ -27,149 +36,64 @@
     </div>
 </nav>
 
-<!-- ============ Dashboard Content ============ -->
 <div class="dashboard">
 
-    <!-- ---- Stats Cards ---- -->
     <div class="stats-row">
-        <div class="stat-card">
-            <div class="label">Total Events</div>
-            <div class="value" id="stat-total">—</div>
-            <div class="subtext">All time</div>
-        </div>
-        <div class="stat-card">
-            <div class="label">Last 24 Hours</div>
-            <div class="value" id="stat-last24h">—</div>
-            <div class="subtext">Recent activity</div>
-        </div>
-        <div class="stat-card critical">
-            <div class="label">Critical Alerts</div>
-            <div class="value" id="stat-critical">—</div>
-            <div class="subtext">Immediate action</div>
-        </div>
-        <div class="stat-card high">
-            <div class="label">High Severity</div>
-            <div class="value" id="stat-high">—</div>
-            <div class="subtext">Needs review</div>
-        </div>
-        <div class="stat-card success">
-            <div class="label">Unique IPs</div>
-            <div class="value" id="stat-unique-ips">—</div>
-            <div class="subtext">Tracked sources</div>
-        </div>
-        <div class="stat-card">
-            <div class="label">Last Hour</div>
-            <div class="value" id="stat-last-hour">—</div>
-            <div class="subtext">Events/hour</div>
-        </div>
+        <div class="stat-card"><div class="label">Total Events</div><div class="value" id="stat-total">—</div><div class="subtext">Filtered by Project</div></div>
+        <div class="stat-card"><div class="label">Last 24 Hours</div><div class="value" id="stat-last24h">—</div><div class="subtext">Recent activity</div></div>
+        <div class="stat-card critical"><div class="label">Critical Alerts</div><div class="value" id="stat-critical">—</div><div class="subtext">Immediate action</div></div>
+        <div class="stat-card high"><div class="label">High Severity</div><div class="value" id="stat-high">—</div><div class="subtext">Needs review</div></div>
+        <div class="stat-card success"><div class="label">Unique IPs</div><div class="value" id="stat-unique-ips">—</div><div class="subtext">Tracked sources</div></div>
+        <div class="stat-card"><div class="label">Last Hour</div><div class="value" id="stat-last-hour">—</div><div class="subtext">Events/hour</div></div>
     </div>
 
-    <!-- ---- Main Content: Events + Sidebar ---- -->
     <div class="content-grid">
-
-        <!-- Left: Live Events Feed -->
         <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">🔴 Live Event Feed</span>
-                <div class="filter-bar">
-                    <button class="filter-btn active" data-filter="ALL" onclick="setFilter('ALL')">All</button>
-                    <button class="filter-btn" data-filter="CRITICAL" onclick="setFilter('CRITICAL')">Critical</button>
-                    <button class="filter-btn" data-filter="HIGH" onclick="setFilter('HIGH')">High</button>
-                    <button class="filter-btn" data-filter="WARNING" onclick="setFilter('WARNING')">Warning</button>
-                    <button class="filter-btn" data-filter="MEDIUM" onclick="setFilter('MEDIUM')">Medium</button>
-                    <button class="filter-btn" data-filter="INFO" onclick="setFilter('INFO')">Info</button>
-                </div>
-            </div>
+            <div class="panel-header"><span class="panel-title">🔴 Live Event Feed</span></div>
             <div class="panel-body" id="events-feed" style="max-height: 600px;">
-                <div style="text-align: center; padding: 40px; color: var(--text-muted);">
-                    <div class="spinner"></div>
-                    <div style="margin-top: 10px;">Loading events...</div>
-                </div>
+                <div style="text-align: center; padding: 40px; color: var(--text-muted);"><div class="spinner"></div></div>
             </div>
         </div>
 
-        <!-- Right Sidebar -->
         <div style="display: flex; flex-direction: column; gap: 20px;">
-
-            <!-- Severity Distribution -->
             <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">📊 Severity Distribution</span>
-                </div>
-                <div class="panel-body" id="severity-chart">
-                    <div style="color: var(--text-muted);">Loading...</div>
-                </div>
+                <div class="panel-header"><span class="panel-title">📊 Severity Distribution</span></div>
+                <div class="panel-body" id="severity-chart"><div style="color: var(--text-muted);">Loading...</div></div>
             </div>
-
-            <!-- Top Sources -->
             <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">📡 Top Sources</span>
-                </div>
-                <div class="panel-body" id="sources-list">
-                    <div style="color: var(--text-muted);">Loading...</div>
-                </div>
+                <div class="panel-header"><span class="panel-title">📡 Top Sources</span></div>
+                <div class="panel-body" id="sources-list"><div style="color: var(--text-muted);">Loading...</div></div>
             </div>
-
         </div>
     </div>
 
-    <!-- ---- GeoIP Map + MITRE Heatmap Row ---- -->
     <div class="bottom-grid">
-
-        <!-- GeoIP Attack Map -->
         <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">🌍 Attack Origin Map</span>
-            </div>
-            <div class="panel-body" style="padding: 0;">
-                <div id="geomap"></div>
-            </div>
+            <div class="panel-header"><span class="panel-title">🌍 Attack Origin Map</span></div>
+            <div class="panel-body" style="padding: 0;"><div id="geomap"></div></div>
         </div>
-
-        <!-- MITRE ATT&CK Heatmap -->
         <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">⚔️ MITRE ATT&CK Coverage</span>
-            </div>
-            <div class="panel-body">
-                <div class="mitre-grid" id="mitre-heatmap">
-                    <div style="color: var(--text-muted);">Loading MITRE data...</div>
-                </div>
-            </div>
-        </div>
-
-    </div>
-
-    <!-- ---- Detection Rules Table ---- -->
-    <div class="panel" style="margin-top: 20px;">
-        <div class="panel-header">
-            <span class="panel-title">📋 Active Detection Rules</span>
-            <span style="font-size: 12px; color: var(--text-muted);">Loaded from config/alert_rules.yaml</span>
-        </div>
-        <div class="panel-body">
-            <table class="rules-table">
-                <thead>
-                    <tr>
-                        <th>Severity</th>
-                        <th>Rule Name</th>
-                        <th>MITRE ID</th>
-                        <th>Description</th>
-                    </tr>
-                </thead>
-                <tbody id="rules-table-body">
-                    <tr><td colspan="4" style="color: var(--text-muted);">Loading rules...</td></tr>
-                </tbody>
-            </table>
+            <div class="panel-header"><span class="panel-title">⚔️ MITRE ATT&CK Coverage</span></div>
+            <div class="panel-body"><div class="mitre-grid" id="mitre-heatmap">Loading MITRE data...</div></div>
         </div>
     </div>
 
 </div>
 
-<!-- ============ Scripts ============ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/js/dashboard.js"></script>
+
 <script>
+    // ---- Global Multi-Project Logic ----
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentProject = urlParams.get('project') || '';
+
+    // Sync Dropdown State
+    window.addEventListener('DOMContentLoaded', () => {
+        const sel = document.getElementById('projectSelect');
+        if (sel) sel.value = currentProject;
+    });
+
     // ---- Clock ----
     function updateClock() {
         const el = document.getElementById("clock");
@@ -191,11 +115,16 @@
             maxZoom: 18,
         }).addTo(map);
 
-        // Fetch and plot GeoIP data
+        // Fetch and plot GeoIP data (Filtered by Project)
         async function loadGeoData() {
             try {
-                const resp = await fetch("/api/geo");
+                let geoUrl = "/api/geo";
+                if (currentProject) geoUrl += `?project=${encodeURIComponent(currentProject)}`;
+                
+                const resp = await fetch(geoUrl);
                 const data = await resp.json();
+                
+                // (Clearing markers could be added here for dynamic updates)
                 data.forEach(point => {
                     if (point.latitude && point.longitude && point.latitude !== 0) {
                         const color = point.threat_score > 50 ? "#ef4444" :
@@ -209,14 +138,14 @@
                             fillOpacity: 0.5,
                         }).addTo(map).bindPopup(
                             `<b>${point.ip || "Unknown"}</b><br>` +
+                            `Project: ${currentProject || "Global"}<br>` +
                             `${point.city || ""}, ${point.country || "Unknown"}<br>` +
-                            `Events: ${point.count || 0}<br>` +
-                            `Threat Score: ${point.threat_score || 0}/100`
+                            `Events: ${point.count || 0}`
                         );
                     }
                 });
             } catch (e) {
-                console.log("GeoIP data not available yet");
+                console.log("GeoIP data load failed for current context.");
             }
         }
         loadGeoData();
