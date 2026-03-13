@@ -288,4 +288,4 @@ function formatTime(isoString) {
         if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
         return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } catch { return isoString; }
-}<div class="event-source">${escapeHtml(e.source)}
+}
