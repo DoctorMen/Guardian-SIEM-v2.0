@@ -128,25 +128,30 @@ class EventBus:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        where_clause = ""
+        # Build WHERE clause that's always valid SQL
+        conditions = []
         params = []
         if project:
-            where_clause = " WHERE project = ?"
-            params = [project]
+            conditions.append("project = ?")
+            params.append(project)
+
+        where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
         stats = {}
         # Total Events
-        stats["total_events"] = cursor.execute(f"SELECT COUNT(*) FROM events {where_clause}", params).fetchone()[0]
-        
+        stats["total_events"] = cursor.execute(f"SELECT COUNT(*) FROM events{where_clause}", params).fetchone()[0]
+
         # Severity Breakdown
-        sev_rows = cursor.execute(f"SELECT severity, COUNT(*) FROM events {where_clause} GROUP BY severity", params).fetchall()
+        sev_rows = cursor.execute(f"SELECT severity, COUNT(*) FROM events{where_clause} GROUP BY severity", params).fetchall()
         stats["by_severity"] = {row[0]: row[1] for row in sev_rows}
 
-        # Unique IPs
-        stats["unique_ips"] = cursor.execute(f"SELECT COUNT(DISTINCT src_ip) FROM events {where_clause} AND src_ip != ''", params).fetchone()[0]
+        # Unique IPs — always needs src_ip != '' condition
+        ip_conditions = conditions + ["src_ip != ''"]
+        ip_where = " WHERE " + " AND ".join(ip_conditions)
+        stats["unique_ips"] = cursor.execute(f"SELECT COUNT(DISTINCT src_ip) FROM events{ip_where}", params).fetchone()[0]
 
         # Top Sources
-        src_rows = cursor.execute(f"SELECT source, COUNT(*) FROM events {where_clause} GROUP BY source ORDER BY COUNT(*) DESC LIMIT 5", params).fetchall()
+        src_rows = cursor.execute(f"SELECT source, COUNT(*) FROM events{where_clause} GROUP BY source ORDER BY COUNT(*) DESC LIMIT 5", params).fetchall()
         stats["by_source"] = {row[0]: row[1] for row in src_rows}
 
         conn.close()

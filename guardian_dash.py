@@ -194,6 +194,33 @@ def get_geo():
     finally:
         conn.close()
 
+@app.route('/api/mitre')
+def get_mitre():
+    """Serve MITRE ATT&CK technique data for the dashboard heatmap."""
+    project = request.args.get('project', None)
+    techniques = mitre_tagger.get_all_techniques()
+
+    # Build top-triggered counts from DB
+    conn = get_db_connection()
+    try:
+        query = "SELECT mitre_id, COUNT(*) as cnt FROM events WHERE mitre_id != ''"
+        params = []
+        if project:
+            query += " AND project = ?"
+            params.append(project)
+        query += " GROUP BY mitre_id"
+        rows = conn.execute(query, params).fetchall()
+        top_triggered = {row["mitre_id"]: row["cnt"] for row in rows}
+    finally:
+        conn.close()
+
+    return jsonify({"techniques": techniques, "top_triggered": top_triggered})
+
+@app.route('/api/rules')
+def get_rules():
+    """Serve detection rules summary for the dashboard rules table."""
+    return jsonify(rules_engine.get_rules_summary())
+
 @app.route('/api/health')
 def health():
     return jsonify({"status": "operational", "timestamp": datetime.now().isoformat()})
