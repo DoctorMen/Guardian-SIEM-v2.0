@@ -1,18 +1,39 @@
-# 🛡️ Guardian SIEM v2.2
+# 🛡️ Guardian SIEM
 
-**A full-featured Security Information and Event Management (SIEM) system built in Python — with integrated Purple Team lab, professional incident reporting, and cloud honeypot intelligence.**
+**A working SIEM written from scratch in Python: log and packet ingestion, a YAML + Sigma + YARA detection engine, MITRE ATT&CK mapping, threat-intel enrichment, active response, and a live SOC dashboard. 176 automated tests, run in CI on Linux and Windows.**
 
-Guardian captures live network traffic, ingests logs from multiple sources (including syslog UDP/TCP), evaluates events against configurable detection rules (YAML + SIGMA + YARA), enriches alerts with MITRE ATT&CK mappings and GeoIP data, queries external threat intelligence APIs, supports automated active response, and presents everything through a professional real-time SOC dashboard with authentication and PDF report generation.
-
-**New in v2.2:** Purple Team attack simulator (11 MITRE techniques, 3 campaigns), professional incident report generator (Executive Summary / Technical Analysis / Remediation format), cloud honeypot log parser (AWS CloudTrail + Azure Activity), and [Architectural Decision Records](DESIGN.md).
-
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![CI](https://github.com/DoctorMen/Guardian-SIEM-v2.0/actions/workflows/ci.yml/badge.svg)](https://github.com/DoctorMen/Guardian-SIEM-v2.0/actions/workflows/ci.yml)
-[![Flask](https://img.shields.io/badge/Flask-3.x-green.svg)](https://flask.palletsprojects.com)
-[![Tests](https://img.shields.io/badge/Tests-176%20passing-brightgreen.svg)](#running-tests)
-[![Security](https://img.shields.io/badge/Security-14%20vulns%20fixed-blueviolet.svg)](SECURITY.md)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](Dockerfile)
+
+![Guardian SIEM dashboard showing live detections mapped to MITRE ATT&CK](docs/screenshots/dashboard.png)
+
+*The dashboard above is running against the built-in demo traffic generator (`generate_noise.py`). The IPs and hosts are simulated, but every alert went through the real pipeline: ingestion, then the rules and Sigma engines, then ATT&CK tagging and GeoIP.*
+
+## Try it in 60 seconds
+
+```bash
+git clone https://github.com/DoctorMen/Guardian-SIEM-v2.0.git && cd Guardian-SIEM-v2.0
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python guardian_dash.py          # dashboard on http://127.0.0.1:5001
+python generate_noise.py --fast  # in a second terminal: stream simulated attacks
+python -m pytest tests/ -q       # 176 tests
+```
+
+## What this project demonstrates
+
+| Skill | Where to look |
+|---|---|
+| Detection engineering (Sigma, YARA, threshold and sliding-window rules) | [`sigma_engine.py`](sigma_engine.py), [`rules_engine.py`](rules_engine.py), [`config/sigma_rules/`](config/sigma_rules/) |
+| Mapping detections to MITRE ATT&CK and finding coverage gaps | [`mitre_tagger.py`](mitre_tagger.py), [`attack_simulator.py`](attack_simulator.py) |
+| Log parsing: Windows Event Log, Sysmon, syslog (RFC 3164/5424), CloudTrail, Azure Activity | [`log_ingestor.py`](log_ingestor.py), [`syslog_receiver.py`](syslog_receiver.py), [`cloud_honeypot.py`](cloud_honeypot.py) |
+| Network traffic analysis (port-scan, rate and DNS anomaly detection with Scapy) | [`passive_ips.py`](passive_ips.py) |
+| Threat-intel enrichment (AbuseIPDB, VirusTotal, with caching) | [`threat_intel.py`](threat_intel.py) |
+| Secure coding: a self-audit that fixed 14 findings, with auth and CSRF on the dashboard | [`SECURITY.md`](SECURITY.md), [`auth.py`](auth.py) |
+| Engineering trade-offs written down | [`DESIGN.md`](DESIGN.md) (7 architecture decision records) |
+| Testing and CI | [`tests/`](tests/) (176 tests), [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 ---
 
@@ -58,7 +79,7 @@ Guardian captures live network traffic, ingests logs from multiple sources (incl
 | **Attack Simulator** | 11 MITRE ATT&CK techniques with realistic Windows/network telemetry — Mimikatz, Kerberoasting, brute force, ransomware, lateral movement, exfiltration |
 | **Attack Campaigns** | 3 pre-built multi-stage campaigns: APT29 (Cozy Bear), human-operated Ransomware, and Insider Threat |
 | **Detection Coverage** | Automated coverage reporting — shows which techniques were detected and which are detection gaps |
-| **18 Detection Rules** | 10 YAML + 11 SIGMA rules covering credential access, lateral movement, defense evasion, persistence, exfiltration, and impact |
+| **30 Detection Rules** | 18 YAML + 12 SIGMA rules covering credential access, lateral movement, defense evasion, persistence, exfiltration, and impact |
 | **Cloud Honeypot Parser** | Parse AWS CloudTrail + Azure Activity Logs to analyze bot scanning, unauthorized access, and known scanner fingerprints (Shodan, Censys, BinaryEdge) |
 | **Architectural Decisions** | [DESIGN.md](DESIGN.md) with 7 ADRs documenting every major engineering trade-off |
 
@@ -363,7 +384,7 @@ Guardian_SIEM/
 │   ├── config.yaml              # Master configuration
 │   ├── alert_rules.yaml         # Detection rules (18 YAML rules)
 │   ├── mitre_mappings.yaml      # MITRE ATT&CK technique/tactic mappings
-│   ├── sigma_rules/             # SIGMA detection rules (11 .yml files)
+│   ├── sigma_rules/             # SIGMA detection rules (12 .yml files)
 │   └── yara_rules/              # YARA scanning rules (.yar files)
 ├── database/                    # SQLite databases (auto-created)
 ├── reports/
