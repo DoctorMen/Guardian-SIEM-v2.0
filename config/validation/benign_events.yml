@@ -1,0 +1,142 @@
+# Benign events that look like attacks.
+#
+# detection_validator.py replays every event here through the full
+# detection pipeline and fails if any rule fires. Each one is a known false
+# positive pattern for one of the rules in this repo, so a rule change that
+# reintroduces the false positive breaks CI.
+#
+# Each entry: why it is benign, the log source, and the raw message.
+
+events:
+  # --- Credential access look-alikes -------------------------------------
+  - why: Defender scans LSASS memory as part of normal AV operation
+    source: Windows_Sysmon
+    message: >-
+      Event ID 10: Process accessed.
+      SourceImage: C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.24090.11-0\MsMpEng.exe.
+      TargetImage: C:\Windows\System32\lsass.exe. GrantedAccess: 0x1410.
+      SourceUser: NT AUTHORITY\SYSTEM
+
+  - why: Task Manager reading LSASS with query-only rights (no memory read)
+    source: Windows_Sysmon
+    message: >-
+      Event ID 10: Process accessed. SourceImage: C:\Windows\System32\Taskmgr.exe.
+      TargetImage: C:\Windows\System32\lsass.exe. GrantedAccess: 0x1000. SourceUser: CORP\jsmith
+
+  - why: Normal Kerberos service ticket with AES256 encryption
+    source: Windows_EventLog
+    message: >-
+      Event ID 4769: A Kerberos service ticket was requested. Account Name: jsmith@CORP.LOCAL.
+      Service Name: svc_sql. Ticket Options: 0x40810000. Ticket Encryption Type: 0x12.
+      Client Address: 192.168.1.20
+
+  - why: RC4 tickets for computer accounts are common on older domains and are not kerberoastable
+    source: Windows_EventLog
+    message: >-
+      Event ID 4769: A Kerberos service ticket was requested. Account Name: FILE01$@CORP.LOCAL.
+      Service Name: DC01$. Ticket Options: 0x40810000. Ticket Encryption Type: 0x17.
+      Client Address: 10.0.0.5
+
+  - why: A user mistypes their password twice
+    source: Windows_EventLog
+    repeat: 2
+    message: >-
+      Event ID 4625: An account failed to log on. Subject: NT AUTHORITY\SYSTEM.
+      Target: CORP\mlee. Logon Type: 2. Source Network Address: 192.168.1.31.
+      Failure Reason: Unknown user name or bad password
+
+  - why: Monday morning, five different users on five workstations each fail one logon
+    source: Windows_EventLog
+    each_ip: [192.168.1.41, 192.168.1.42, 192.168.1.43, 192.168.1.44, 192.168.1.45]
+    message: >-
+      Event ID 4625: An account failed to log on. Subject: NT AUTHORITY\SYSTEM.
+      Target: CORP\user. Logon Type: 3. Source Network Address: {ip}.
+      Failure Reason: Unknown user name or bad password
+
+  - why: An administrator logs on and receives the privileges that come with the role
+    source: Windows_EventLog
+    message: >-
+      Event ID 4672: Special privileges assigned to new logon. Subject: CORP\it_admin.
+      Privileges: SeSecurityPrivilege SeBackupPrivilege SeRestorePrivilege SeDebugPrivilege
+
+  # --- Lateral movement look-alikes --------------------------------------
+  - why: An administrator opens one RDP session from the jump host
+    source: Windows_EventLog
+    message: >-
+      Event ID 4624: An account was successfully logged on. Target: CORP\it_admin.
+      Logon Type: 10. Source Network Address: 10.0.0.250. Workstation Name: FILE01
+
+  # --- Execution look-alikes ---------------------------------------------
+  - why: Scheduled backup script runs PowerShell with -NoProfile (contains "-NoP")
+    source: Windows_Sysmon
+    message: >-
+      Event ID 1: Process Create. Image: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+      CommandLine: powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File C:\Scripts\backup.ps1
+      ParentImage: C:\Windows\System32\svchost.exe User: CORP\svc_backup
+
+  - why: An analyst lists files in PowerShell
+    source: Windows_PowerShell
+    message: >-
+      Event ID 4104: Creating Scriptblock text. ScriptBlockText: Get-ChildItem -Path C:\Reports
+      -Filter *.csv | Sort-Object LastWriteTime
+
+  - why: A Linux cron job runs through /bin/sh
+    source: Linux_Syslog
+    message: >-
+      CRON[22841]: (root) CMD (/bin/sh -c "cd / && run-parts --report /etc/cron.hourly")
+
+  # --- Defense evasion look-alikes ---------------------------------------
+  - why: An administrator queries the Security log with wevtutil (does not clear it)
+    source: Windows_Sysmon
+    message: >-
+      Event ID 1: Process Create. Image: C:\Windows\System32\wevtutil.exe
+      CommandLine: wevtutil qe Security /c:20 /f:text ParentImage: C:\Windows\System32\cmd.exe
+      User: CORP\it_admin
+
+  # --- Persistence look-alikes -------------------------------------------
+  - why: Google Update installs its service from Program Files
+    source: Windows_EventLog
+    message: >-
+      Event ID 7045: A service was installed in the system. Service Name: gupdate.
+      Service File Name: "C:\Program Files (x86)\Google\Update\GoogleUpdate.exe" /svc.
+      Service Type: user mode service. Service Start Type: auto start. Service Account: LocalSystem
+
+  # --- Network look-alikes -----------------------------------------------
+  - why: Nightly backup moves 2 GB to the internal backup server
+    source: Network_Flow
+    message: >-
+      Flow end: SrcIp: 10.0.0.20. DstIp: 10.0.0.30. DstPort: 445. Protocol: TCP.
+      BytesOut: 2147483648. BytesIn: 2097152. Duration: 1800
+
+  - why: A workstation downloads a large update (big BytesIn, small BytesOut)
+    source: Network_Flow
+    message: >-
+      Flow end: SrcIp: 192.168.1.20. DstIp: 13.107.4.50. DstPort: 443. Protocol: TCP.
+      BytesOut: 524288. BytesIn: 1073741824. Duration: 300
+
+  - why: A workstation connects to a few internal services
+    source: Network_Flow
+    each_port: [53, 88, 389, 445]
+    message: >-
+      Connection: SrcIp: 192.168.1.20. DstIp: 10.0.0.1. DstPort: {port}. Protocol: TCP.
+      Flags: SA. Reply: established
+
+  - why: Ordinary DNS lookups, including long CDN and Active Directory names
+    source: Network_DNS
+    each_query: [www.microsoft.com, e3891.dscx.akamaiedge.net, _ldap._tcp.dc._msdcs.corp.local,
+                 login.microsoftonline.com, safebrowsing.googleapis.com]
+    message: >-
+      DNS query: SrcIp: 192.168.1.20. QueryName: {query}. QueryType: A
+
+  # --- Impact look-alikes ------------------------------------------------
+  - why: An administrator lists shadow copies (does not delete them)
+    source: Windows_Sysmon
+    message: >-
+      Event ID 1: Process Create. Image: C:\Windows\System32\vssadmin.exe
+      CommandLine: vssadmin list shadows ParentImage: C:\Windows\System32\cmd.exe User: CORP\it_admin
+
+  - why: A user saves a document whose name mentions encryption
+    source: Windows_Sysmon
+    message: >-
+      Event ID 11: File created. Image: C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE
+      TargetFilename: C:\Users\jsmith\Documents\encrypted-email-howto.docx

@@ -56,10 +56,12 @@ class SigmaRule:
 
         # MITRE ATT&CK from tags
         self.mitre_id = ""
+        self.mitre_ids = []
         self.mitre_tactic = ""
         for tag in self.tags:
             if tag.startswith("attack.t"):
                 self.mitre_id = tag.replace("attack.", "").upper()
+                self.mitre_ids.append(self.mitre_id)
             elif tag.startswith("attack.") and not tag[7:].startswith("t"):
                 self.mitre_tactic = tag.replace("attack.", "").replace("_", " ").title()
 
@@ -232,6 +234,7 @@ class SigmaEngine:
                     "description": rule.description,
                     "severity": rule.severity,
                     "mitre_id": rule.mitre_id,
+                    "mitre_ids": rule.mitre_ids,
                     "mitre_tactic": rule.mitre_tactic,
                     "tags": rule.tags,
                     "author": rule.author,

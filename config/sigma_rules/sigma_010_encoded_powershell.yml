@@ -3,9 +3,10 @@ id: 5d6e7f80-1a2b-3c4d-5e6f-708192a3b4c5
 status: stable
 level: high
 description: >
-    Detects PowerShell execution with Base64-encoded commands, commonly used to
-    obfuscate malicious payloads. The -Enc, -EncodedCommand, and -e parameters
-    trigger decode-and-execute, making this a favorite attacker technique.
+    Detects PowerShell started with a base64-encoded command (-e, -enc,
+    -EncodedCommand and their abbreviations), a common way to hide a payload
+    from command-line logging. -NoProfile on its own is not matched, because
+    scheduled scripts use it all the time.
 author: Guardian SIEM
 date: 2025/02/13
 tags:
@@ -20,19 +21,13 @@ logsource:
     product: windows
     category: process_creation
 detection:
-    selection:
-        EventID:
-            - 1
-            - 4688
-    keywords:
-        - "powershell"
-        - "-Enc"
-        - "-NonI"
-        - "-W Hidden"
-        - "-NoP"
-        - "EncodedCommand"
-        - "FromBase64String"
-    condition: selection and keywords
+    selection_image:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+    selection_encoded:
+        CommandLine|re: '\s-e(c|nc|nco|ncod|ncode|ncoded|ncodedc|ncodedcommand)?\s+[A-Za-z0-9+/=]{8,}'
+    condition: selection_image and selection_encoded
 falsepositives:
     - SCCM/Intune deployment scripts
     - Configuration management tools encoding parameters

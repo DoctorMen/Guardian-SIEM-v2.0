@@ -2,7 +2,9 @@ title: Suspicious PowerShell Execution
 id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 status: experimental
 level: high
-description: Detects suspicious PowerShell commands often used in attacks.
+description: Detects PowerShell command lines that download and run code (download cradles).
+  Encoded commands are covered by sigma_010; -ExecutionPolicy Bypass alone is not
+  matched because management tools use it routinely.
 author: Guardian SIEM
 date: 2025/01/01
 tags:
@@ -14,13 +16,11 @@ logsource:
 detection:
   selection:
     CommandLine|contains:
-    - -EncodedCommand
-    - '-enc '
     - Invoke-Expression
     - IEX(
     - downloadstring
+    - downloadfile
     - Net.WebClient
-    - bypass
   condition: selection
 falsepositives:
 - Legitimate admin scripts

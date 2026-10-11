@@ -3,9 +3,11 @@ id: 7b3f5e1a-9c2d-4a8b-b6e0-3d4c5a7f8e9b
 status: stable
 level: critical
 description: >
-    Detects process access to LSASS.exe (Local Security Authority Subsystem),
-    which is targeted by tools like Mimikatz to extract credentials from memory.
-    Sysmon Event ID 10 with GrantedAccess 0x1010 is a strong indicator.
+    Detects a process opening LSASS with access rights that allow reading its
+    memory (PROCESS_VM_READ combined with query rights), which is how Mimikatz
+    and similar tools extract credentials. Query-only access such as 0x1000
+    (Task Manager) is not matched. Defender and core Windows processes are
+    filtered by full path, so a copy of svchost.exe elsewhere is still caught.
 author: Guardian SIEM
 date: 2025/02/13
 tags:
@@ -20,20 +22,23 @@ logsource:
     category: process_access
 detection:
     selection:
-        EventID:
-            - 10
-    keywords:
-        - "lsass.exe"
-        - "LSASS"
-        - "PROCESS_VM_READ"
-        - "GrantedAccess"
-        - "0x1010"
-        - "0x1FFFFF"
+        EventID: 10
+        TargetImage|endswith: '\lsass.exe'
+        GrantedAccess:
+            - '0x1010'
+            - '0x1410'
+            - '0x1438'
+            - '0x143a'
+            - '0x1fffff'
+    filter_defender:
+        SourceImage|contains: '\Windows Defender\'
     filter_system:
-        - "csrss.exe"
-        - "services.exe"
-        - "svchost.exe"
-    condition: selection and keywords and not filter_system
+        SourceImage:
+            - 'C:\Windows\System32\csrss.exe'
+            - 'C:\Windows\System32\wininit.exe'
+            - 'C:\Windows\System32\services.exe'
+            - 'C:\Windows\System32\svchost.exe'
+    condition: selection and not filter_defender and not filter_system
 falsepositives:
     - Windows Defender performing memory scans
     - Legitimate AV products scanning process memory

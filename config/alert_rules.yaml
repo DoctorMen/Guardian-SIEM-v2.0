@@ -14,29 +14,33 @@
 #   mitre_tactic  - MITRE ATT&CK tactic
 #   threshold     - Number of matches in window before alerting (optional)
 #   window_seconds- Time window for threshold counting (optional)
+#   group_by      - Extracted field the threshold is counted per, e.g. IpAddress
+#                   (optional; see field_extractor.py for field names)
 #   enabled       - Whether this rule is active
 
 rules:
   - name: "Brute Force Detection"
-    description: "Multiple failed login attempts from the same source"
+    description: "Five failed logons from the same source address within a minute"
     source: ".*"
-    pattern: "(failed login|authentication failure|4625|logon failure)"
+    pattern: "(Event ID 4625\\b|failed login|authentication failure|logon failure)"
     severity: "HIGH"
     mitre_id: "T1110"
     mitre_tactic: "Credential Access"
     threshold: 5
     window_seconds: 60
+    group_by: "IpAddress"
     enabled: true
 
   - name: "Port Scan Detection"
-    description: "Rapid connection attempts across multiple ports"
-    source: "Network_IPS"
-    pattern: "(port scan|SYN scan|connection attempt)"
+    description: "Twenty unanswered connection attempts from one source within 10 seconds"
+    source: "Network"
+    pattern: "(Flags: S\\. Reply: none|port scan|SYN scan)"
     severity: "MEDIUM"
     mitre_id: "T1046"
     mitre_tactic: "Discovery"
     threshold: 20
     window_seconds: 10
+    group_by: "IpAddress"
     enabled: true
 
   - name: "High Traffic Anomaly"
@@ -59,12 +63,14 @@ rules:
     mitre_tactic: "Privilege Escalation"
     threshold: 1
     window_seconds: 300
-    enabled: true
+    # Disabled: 4672 is logged on every administrator logon, so on its own it
+    # is not an alert (see config/validation/benign_events.yml). Kept for hunting.
+    enabled: false
 
   - name: "Log Tampering"
     description: "Security audit log was cleared"
     source: ".*"
-    pattern: "(1102|audit log.*cleared|event log.*cleared)"
+    pattern: "(Event ID 1102\\b|audit log.*cleared|event log.*cleared)"
     severity: "CRITICAL"
     mitre_id: "T1070.001"
     mitre_tactic: "Defense Evasion"
@@ -73,9 +79,9 @@ rules:
     enabled: true
 
   - name: "Suspicious Service Installation"
-    description: "New service installed on the system"
+    description: "Service installed from a user-writable path or launched through a shell"
     source: ".*"
-    pattern: "(7045|new service|service.*installed)"
+    pattern: "Event ID 7045\\b.*Service File Name: .*(\\\\ProgramData\\\\|\\\\Users\\\\Public\\\\|\\\\AppData\\\\|\\\\Temp\\\\|powershell|cmd(\\.exe)? /c)"
     severity: "HIGH"
     mitre_id: "T1543.003"
     mitre_tactic: "Persistence"
@@ -84,9 +90,9 @@ rules:
     enabled: true
 
   - name: "Reverse Shell Indicator"
-    description: "Potential reverse shell connection detected"
+    description: "Command line that opens an interactive shell over a TCP socket"
     source: ".*"
-    pattern: "(reverse shell|/bin/sh|cmd\\.exe.*socket|nc -e|ncat.*-e|powershell.*-enc)"
+    pattern: "(bash -i >& ?/dev/tcp/|/dev/tcp/[0-9.]+/[0-9]+|\\bnc(\\.exe)? .*-e |\\bncat(\\.exe)? .*-e |Net\\.Sockets\\.TCPClient\\()"
     severity: "CRITICAL"
     mitre_id: "T1059"
     mitre_tactic: "Execution"
@@ -95,9 +101,9 @@ rules:
     enabled: true
 
   - name: "Data Exfiltration Indicator"
-    description: "Large outbound data transfer detected"
-    source: "Network_IPS"
-    pattern: "(exfiltration|large transfer|outbound.*MB)"
+    description: "A single flow sends 100 MB or more to an address outside RFC 1918 space"
+    source: "Network"
+    pattern: "DstIp: (?!10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)[0-9.]+\\..*BytesOut: [1-9][0-9]{8,}\\b"
     severity: "HIGH"
     mitre_id: "T1041"
     mitre_tactic: "Exfiltration"
@@ -132,20 +138,21 @@ rules:
   # ==================================================================
 
   - name: "Kerberoasting Detection"
-    description: "RC4-encrypted Kerberos TGS-REP tickets indicate Kerberoasting"
+    description: "Two RC4 service tickets for user (non-computer) accounts from one client in 30 seconds"
     source: ".*"
-    pattern: "(4769.*RC4|4769.*0x17|Kerberos service ticket.*RC4-HMAC|Ticket Encryption.*0x17)"
+    pattern: "Event ID 4769\\b.*Service Name: (?!krbtgt\\.)[^ $]+\\. .*Ticket Encryption Type: 0x17\\b"
     severity: "HIGH"
     mitre_id: "T1558.003"
     mitre_tactic: "Credential Access"
     threshold: 2
     window_seconds: 30
+    group_by: "IpAddress"
     enabled: true
 
   - name: "LSASS Credential Access"
-    description: "Process accessing LSASS memory - possible credential dumping"
+    description: "A process other than Defender opens LSASS with memory-read access rights"
     source: ".*"
-    pattern: "(lsass\\.exe.*PROCESS_VM_READ|ProcessAccess.*lsass|GrantedAccess.*0x1010|lsass\\.exe.*0x1FFFFF)"
+    pattern: "^(?!.*\\\\Windows Defender\\\\).*TargetImage: .*\\\\lsass\\.exe\\. .*GrantedAccess: 0x(1010|1410|1438|143a|1fffff)\\b"
     severity: "CRITICAL"
     mitre_id: "T1003"
     mitre_tactic: "Credential Access"
@@ -154,9 +161,9 @@ rules:
     enabled: true
 
   - name: "Ransomware File Encryption"
-    description: "Rapid file encryption or ransom note creation detected"
+    description: "Files written with a ransomware extension, or a ransom note dropped"
     source: ".*"
-    pattern: "(rapid file modification|files renamed.*\\.encrypted|README_DECRYPT|RECOVER_FILES|Your files have been encrypted)"
+    pattern: "TargetFilename: .*(\\.(encrypted|locked|crypt)$|\\\\(README_DECRYPT|RECOVER_FILES|HOW_TO_DECRYPT)[^\\\\]*$)"
     severity: "CRITICAL"
     mitre_id: "T1486"
     mitre_tactic: "Impact"
@@ -167,7 +174,7 @@ rules:
   - name: "Shadow Copy Deletion"
     description: "Volume shadow copies deleted - common ransomware precursor"
     source: ".*"
-    pattern: "(vssadmin delete shadows|wmic shadowcopy delete|Shadow Copy deleted|bcdedit.*recoveryenabled.*no)"
+    pattern: "(vssadmin(\\.exe)? delete shadows|wmic(\\.exe)? shadowcopy delete|bcdedit(\\.exe)? .*recoveryenabled +no)"
     severity: "CRITICAL"
     mitre_id: "T1490"
     mitre_tactic: "Impact"
@@ -176,25 +183,27 @@ rules:
     enabled: true
 
   - name: "RDP Lateral Movement"
-    description: "Remote Desktop logon from internal host indicating lateral movement"
+    description: "One source opens RDP sessions (logon type 10) twice within 10 minutes"
     source: ".*"
-    pattern: "(4624.*Type 10|4624.*RemoteInteractive|RDP.*lateral|Second RDP session)"
+    pattern: "Event ID 4624\\b.*Logon Type: ?10\\b"
     severity: "HIGH"
     mitre_id: "T1021.001"
     mitre_tactic: "Lateral Movement"
     threshold: 2
-    window_seconds: 300
+    window_seconds: 600
+    group_by: "IpAddress"
     enabled: true
 
   - name: "DNS Exfiltration"
-    description: "High-volume DNS queries to suspicious domains indicating data exfiltration"
+    description: "Ten DNS queries with a 40+ character encoded-looking label from one source"
     source: ".*"
-    pattern: "(DNS query volume anomaly|DNS exfiltration|subdomain pattern.*evil)"
+    pattern: "QueryName: [A-Za-z0-9+/=_-]{40,}\\."
     severity: "HIGH"
     mitre_id: "T1048.003"
     mitre_tactic: "Exfiltration"
-    threshold: 1
+    threshold: 10
     window_seconds: 600
+    group_by: "IpAddress"
     enabled: true
 
   - name: "PowerShell Download Cradle"
@@ -209,9 +218,9 @@ rules:
     enabled: true
 
   - name: "C2 Beacon Communication"
-    description: "Outbound connection to known command and control infrastructure"
+    description: "Established outbound connection to a port commonly used by C2 frameworks"
     source: ".*"
-    pattern: "(known C2|C2 communication|beacon\\.exe|reverse shell pattern|AbuseIPDB)"
+    pattern: "DstPort: (4444|1337|31337|50050)\\b.*Reply: established"
     severity: "CRITICAL"
     mitre_id: "T1071"
     mitre_tactic: "Command and Control"

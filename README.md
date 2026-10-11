@@ -1,6 +1,6 @@
 # 🛡️ Guardian SIEM
 
-**A working SIEM written from scratch in Python: log and packet ingestion, a YAML + Sigma + YARA detection engine, MITRE ATT&CK mapping, threat-intel enrichment, active response, and a live SOC dashboard. 176 automated tests, run in CI on Linux and Windows.**
+**A working SIEM written from scratch in Python: log and packet ingestion, a YAML + Sigma + YARA detection engine, MITRE ATT&CK mapping, threat-intel enrichment, active response, and a live SOC dashboard. Every simulated ATT&CK technique is replayed through the real detection engines in CI, alongside known false-positive look-alikes. 220 automated tests on Linux and Windows.**
 
 [![CI](https://github.com/DoctorMen/Guardian-SIEM-v2.0/actions/workflows/ci.yml/badge.svg)](https://github.com/DoctorMen/Guardian-SIEM-v2.0/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](https://python.org)
@@ -9,7 +9,7 @@
 
 ![Guardian SIEM dashboard showing live detections mapped to MITRE ATT&CK](docs/screenshots/dashboard.png)
 
-*The dashboard above is running against the built-in demo traffic generator (`generate_noise.py`). The IPs and hosts are simulated, but every alert went through the real pipeline: ingestion, then the rules and Sigma engines, then ATT&CK tagging and GeoIP.*
+*The dashboard above is running against the demo traffic generator (`generate_noise.py`), which writes simulated, pre-labelled events straight to the event store so the map and charts have something to show. It is a UI demo, not evidence that the rules work. That evidence is the [detection coverage report](docs/detection-coverage.md), which CI regenerates by replaying unlabelled telemetry through the real engines.*
 
 ## Try it in 60 seconds
 
@@ -19,7 +19,8 @@ python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\
 pip install -r requirements.txt
 python guardian_dash.py          # dashboard on http://127.0.0.1:5001
 python generate_noise.py --fast  # in a second terminal: stream simulated attacks
-python -m pytest tests/ -q       # 176 tests
+python detection_validator.py    # replay every technique + benign look-alikes
+python -m pytest tests/ -q       # 220 tests
 ```
 
 ## What this project demonstrates
@@ -27,13 +28,14 @@ python -m pytest tests/ -q       # 176 tests
 | Skill | Where to look |
 |---|---|
 | Detection engineering (Sigma, YARA, threshold and sliding-window rules) | [`sigma_engine.py`](sigma_engine.py), [`rules_engine.py`](rules_engine.py), [`config/sigma_rules/`](config/sigma_rules/) |
-| Mapping detections to MITRE ATT&CK and finding coverage gaps | [`mitre_tagger.py`](mitre_tagger.py), [`attack_simulator.py`](attack_simulator.py) |
+| Detection-as-code: every ATT&CK technique has telemetry, a rule that must fire on it, and benign look-alikes it must ignore, all checked in CI | [`detection_validator.py`](detection_validator.py), [`docs/detection-coverage.md`](docs/detection-coverage.md), [`config/validation/benign_events.yml`](config/validation/benign_events.yml) |
+| Mapping detections to MITRE ATT&CK, with an ATT&CK Navigator layer | [`mitre_tagger.py`](mitre_tagger.py), [`attack_simulator.py`](attack_simulator.py), [`docs/attack-navigator-layer.json`](docs/attack-navigator-layer.json) |
 | Log parsing: Windows Event Log, Sysmon, syslog (RFC 3164/5424), CloudTrail, Azure Activity | [`log_ingestor.py`](log_ingestor.py), [`syslog_receiver.py`](syslog_receiver.py), [`cloud_honeypot.py`](cloud_honeypot.py) |
 | Network traffic analysis (port-scan, rate and DNS anomaly detection with Scapy) | [`passive_ips.py`](passive_ips.py) |
 | Threat-intel enrichment (AbuseIPDB, VirusTotal, with caching) | [`threat_intel.py`](threat_intel.py) |
 | Secure coding: a self-audit that fixed 14 findings, with auth and CSRF on the dashboard | [`SECURITY.md`](SECURITY.md), [`auth.py`](auth.py) |
-| Engineering trade-offs written down | [`DESIGN.md`](DESIGN.md) (7 architecture decision records) |
-| Testing and CI | [`tests/`](tests/) (176 tests), [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Engineering trade-offs written down | [`DESIGN.md`](DESIGN.md) (8 architecture decision records) |
+| Testing and CI | [`tests/`](tests/) (220 tests), [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 
 ---
 
@@ -70,18 +72,18 @@ python -m pytest tests/ -q       # 176 tests
 | **Incident Report Generator** | NIST SP 800-61 format incident reports with Executive Summary, Technical Analysis, Kill Chain visualization, IOC extraction, Impact Assessment, Remediation Plan, and Lessons Learned |
 | **Identity Verifier** | Windows Authenticode signature validation against trusted publisher lists |
 | **Docker Deployment** | Full `docker-compose` stack — dashboard, IPS, and log ingestor in separate containers |
-| **Unit Tests** | Comprehensive test suite (176 tests) covering all core and advanced modules |
+| **Unit Tests** | Test suite (220 tests) covering all core and advanced modules |
 
 ### Purple Team Lab
 
 | Feature | Description |
 |---------|-------------|
-| **Attack Simulator** | 11 MITRE ATT&CK techniques with realistic Windows/network telemetry — Mimikatz, Kerberoasting, brute force, ransomware, lateral movement, exfiltration |
+| **Attack Simulator** | 12 MITRE ATT&CK techniques written as Sysmon, Security, PowerShell, flow and DNS log lines — Mimikatz, Kerberoasting, brute force, ransomware, lateral movement, exfiltration. Events carry no detection labels |
 | **Attack Campaigns** | 3 pre-built multi-stage campaigns: APT29 (Cozy Bear), human-operated Ransomware, and Insider Threat |
-| **Detection Coverage** | Automated coverage reporting — shows which techniques were detected and which are detection gaps |
-| **30 Detection Rules** | 18 YAML + 12 SIGMA rules covering credential access, lateral movement, defense evasion, persistence, exfiltration, and impact |
+| **Detection Validation** | `detection_validator.py` replays each technique through the same pipeline the dashboard runs and fails CI on a gap or on any alert from the benign look-alike set |
+| **27 Detection Rules** | 17 YAML + 10 SIGMA rules covering credential access, lateral movement, defense evasion, persistence, exfiltration, and impact |
 | **Cloud Honeypot Parser** | Parse AWS CloudTrail + Azure Activity Logs to analyze bot scanning, unauthorized access, and known scanner fingerprints (Shodan, Censys, BinaryEdge) |
-| **Architectural Decisions** | [DESIGN.md](DESIGN.md) with 7 ADRs documenting every major engineering trade-off |
+| **Architectural Decisions** | [DESIGN.md](DESIGN.md) with 8 ADRs documenting every major engineering trade-off |
 
 ---
 
@@ -188,7 +190,19 @@ docker-compose logs -f
 
 ## Purple Team Lab
 
-The Purple Team lab generates realistic attack telemetry through Guardian's full detection pipeline — validating that rules fire, alerts trigger, and reports capture forensic evidence.
+The Purple Team lab sends attack telemetry through Guardian's real detection pipeline: field extraction (`field_extractor.py`), then the YAML rules, then Sigma. Nothing in the telemetry says which rule should fire, so a passing test means the rule logic caught it.
+
+### Detection validation
+
+```bash
+python detection_validator.py            # print coverage and false positives
+python detection_validator.py --write    # refresh docs/detection-coverage.md and the Navigator layer
+python detection_validator.py --check    # what CI runs: fail on a gap, a false positive, or stale docs
+```
+
+Current result, from [docs/detection-coverage.md](docs/detection-coverage.md): **12 of 12 techniques detected, 0 alerts on 31 benign look-alike events.** The benign set ([config/validation/benign_events.yml](config/validation/benign_events.yml)) is made of the false positives the first version of these rules actually produced: Defender scanning LSASS, AES Kerberos tickets, a user mistyping a password, five users failing one logon each, an admin's normal RDP session, scheduled scripts using `-NoProfile`, a Linux cron job, Google Update installing its service, and a 2 GB internal backup.
+
+Load [docs/attack-navigator-layer.json](docs/attack-navigator-layer.json) in [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to see the coverage on the matrix.
 
 ### Attack Simulator
 
@@ -204,14 +218,14 @@ python attack_simulator.py --technique T1486     # Ransomware
 # Run a full attack campaign (multi-stage)
 python attack_simulator.py --campaign apt29       # APT29 kill chain (6 techniques)
 python attack_simulator.py --campaign ransomware  # Human-operated ransomware (6 techniques)
-python attack_simulator.py --campaign insider     # Insider threat (3 techniques)
+python attack_simulator.py --campaign insider     # Insider threat (4 techniques)
 
 # Run all techniques and check detection coverage
 python attack_simulator.py --all
 python attack_simulator.py --coverage
 ```
 
-**Techniques (11):** T1003 (Mimikatz), T1110 (Brute Force), T1059.001 (PowerShell), T1046 (Port Scan), T1070.001 (Log Clearing), T1543.003 (Service Persistence), T1041 (Exfiltration), T1059 (Reverse Shell), T1558.003 (Kerberoasting), T1021.001 (RDP Lateral Movement), T1486 (Ransomware).
+**Techniques (12):** T1003 (Mimikatz), T1110 (Brute Force), T1059.001 (PowerShell), T1046 (Port Scan), T1070.001 (Log Clearing), T1543.003 (Service Persistence), T1041 (Exfiltration), T1048.003 (DNS Exfiltration), T1059 (Reverse Shell), T1558.003 (Kerberoasting), T1021.001 (RDP Lateral Movement), T1486 (Ransomware).
 
 ### Incident Reports
 
@@ -382,9 +396,10 @@ Results are cached locally in SQLite to respect rate limits.
 Guardian_SIEM/
 ├── config/
 │   ├── config.yaml              # Master configuration
-│   ├── alert_rules.yaml         # Detection rules (18 YAML rules)
+│   ├── alert_rules.yaml         # Detection rules (18 YAML rules, 17 enabled)
 │   ├── mitre_mappings.yaml      # MITRE ATT&CK technique/tactic mappings
-│   ├── sigma_rules/             # SIGMA detection rules (12 .yml files)
+│   ├── sigma_rules/             # SIGMA detection rules (10 .yml files)
+│   ├── validation/benign_events.yml # Benign look-alikes the rules must ignore
 │   └── yara_rules/              # YARA scanning rules (.yar files)
 ├── database/                    # SQLite databases (auto-created)
 ├── reports/
@@ -398,7 +413,7 @@ Guardian_SIEM/
 │   └── js/dashboard.js          # Real-time event feed & charts
 ├── templates/
 │   └── dashboard.html           # Dashboard HTML template
-├── tests/                       # 176 unit tests across 15 test files
+├── tests/                       # 220 tests across 17 test files
 │   ├── test_event_bus.py
 │   ├── test_rules_engine.py
 │   ├── test_sigma_engine.py
@@ -411,7 +426,9 @@ Guardian_SIEM/
 │   ├── test_auth.py
 │   ├── test_report_generator.py
 │   ├── test_syslog_receiver.py
-│   ├── test_attack_simulator.py  # NEW: Purple team simulator tests
+│   ├── test_attack_simulator.py  # Purple team simulator tests
+│   ├── test_detections.py        # Every technique detected, every benign case quiet
+│   ├── test_field_extractor.py   # Text event -> Sigma fields
 │   ├── test_incident_report.py   # NEW: Incident report tests
 │   └── test_cloud_honeypot.py    # NEW: Cloud honeypot parser tests
 │
@@ -420,6 +437,8 @@ Guardian_SIEM/
 ├── guardian_dash.py             # Flask dashboard + WebSocket + REST API
 ├── passive_ips.py               # Scapy network monitor (IPS)
 ├── log_ingestor.py              # Multi-source log ingestion
+├── field_extractor.py           # Text events -> structured fields for Sigma
+├── detection_pipeline.py        # One pipeline (extract -> YAML rules -> Sigma) used everywhere
 ├── rules_engine.py              # YAML-based detection rules engine
 ├── sigma_engine.py              # SIGMA-format detection rule engine
 ├── yara_scanner.py              # YARA file/memory scanning
@@ -434,7 +453,8 @@ Guardian_SIEM/
 ├── identity_verifier.py         # Windows Authenticode checker
 │
 ├── # ── Purple Team / Portfolio ──
-├── attack_simulator.py          # NEW: MITRE ATT&CK attack simulator (11 techniques, 3 campaigns)
+├── attack_simulator.py          # MITRE ATT&CK attack simulator (12 techniques, 3 campaigns)
+├── detection_validator.py       # Replays every technique + benign set through the engines
 ├── incident_report.py           # NEW: Professional incident report generator (NIST SP 800-61)
 ├── cloud_honeypot.py            # NEW: Cloud honeypot log parser (AWS/Azure/GCP)
 ├── generate_sample_reports.py   # NEW: Portfolio demo report generator
@@ -496,19 +516,20 @@ All configuration lives in `config/config.yaml`. Key settings:
 
 ## SIGMA Rules
 
-SIGMA rules are loaded from `config/sigma_rules/`. Guardian ships with 11 built-in rules:
+SIGMA rules are loaded from `config/sigma_rules/`. Field selections (`EventID`, `TargetImage`, `TicketEncryptionType`, ...) match the fields `field_extractor.py` pulls out of each event. Guardian ships with 10 rules:
 
-- **Failed Logon Detection** — multiple failed Windows logon events (Event ID 4625)
-- **Suspicious PowerShell** — encoded commands, hidden windows, bypass flags
+- **Suspicious PowerShell** — download cradles on the command line (`IEX`, `DownloadString`, `Net.WebClient`)
+- **Encoded PowerShell** — `-e`/`-enc`/`-EncodedCommand` followed by base64, on `powershell.exe` or `pwsh.exe`
 - **Log Clearing** — Windows Security log cleared (Event ID 1102)
-- **Reverse Shell** — common reverse shell patterns (`/bin/sh`, `bash -i`, `nc -e`)
-- **Suspicious Service Install** — service installation via `sc create` or `New-Service`
-- **Kerberoasting (RC4 Tickets)** — Kerberos TGS-REP with RC4-HMAC encryption (Event ID 4769)
-- **LSASS Memory Access** — process accessing LSASS.exe for credential dumping (Sysmon Event 10)
-- **RDP Lateral Movement** — anomalous Type 10 logons indicating lateral movement
-- **Ransomware File Encryption** — rapid file renaming, ransom notes, shadow copy deletion
-- **DNS Exfiltration** — high-volume DNS queries to suspicious domains
-- **Encoded PowerShell** — Base64-encoded command execution
+- **Reverse Shell** — common reverse shell command lines (`bash -i`, `nc -e`, PowerShell `TCPClient`)
+- **Service Installed From a Suspicious Path** — Event ID 7045 with the binary in ProgramData, Public, AppData or Temp, or launched through a shell
+- **Kerberoasting (RC4 Tickets)** — Event ID 4769 with ticket encryption 0x17, computer accounts and krbtgt excluded
+- **LSASS Memory Access** — Sysmon Event 10 on lsass.exe with memory-read access rights, Defender and System32 processes excluded by full path
+- **Ransomware File Encryption** — ransomware file extensions, ransom notes, shadow copy deletion
+- **DNS Query With an Encoded Label** — first label of 40+ base64/hex-like characters
+- **Port Scan Reported by Passive IPS** — the scan summary `passive_ips.py` emits
+
+Brute force and RDP lateral movement are detected by the YAML rules instead, because they need a count per source address (`group_by: IpAddress`), which this Sigma engine does not support.
 
 Add your own `.yml` rules following the [SIGMA specification](https://sigmahq.io/) — Guardian supports field matching, keyword matching, wildcards, and modifiers (`contains`, `startswith`, `endswith`, `re`).
 
