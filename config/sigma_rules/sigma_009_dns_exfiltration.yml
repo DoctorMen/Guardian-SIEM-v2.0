@@ -1,17 +1,16 @@
-title: DNS Exfiltration - High Query Volume
+title: DNS Query With an Encoded Label
 id: 4c3b2a1f-0e9d-8c7b-6a5f-4e3d2c1b0a9f
 status: stable
 level: high
 description: >
-    Detects potential DNS-based data exfiltration characterized by an unusually
-    high volume of DNS queries, long subdomain labels (used to encode data),
-    or queries to suspicious newly-registered domains.
+    Detects DNS queries whose first label is 40 or more base64- or hex-like
+    characters. Tools that tunnel data over DNS pack each chunk into the
+    subdomain, which produces labels far longer than normal hostnames.
 author: Guardian SIEM
 date: 2025/02/13
 tags:
     - attack.exfiltration
     - attack.t1048.003
-    - attack.t1041
 references:
     - https://attack.mitre.org/techniques/T1048/003/
 logsource:
@@ -19,10 +18,7 @@ logsource:
     service: dns
 detection:
     selection:
-        - "DNS query volume anomaly"
-        - "DNS exfiltration"
-        - "subdomain pattern"
-        - "dns queries"
+        QueryName|re: '^[A-Za-z0-9+/=_-]{40,}\.'
     condition: selection
 falsepositives:
     - High-volume DNS resolvers

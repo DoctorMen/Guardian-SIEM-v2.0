@@ -43,14 +43,14 @@ class TestAttackSimulator:
         self.sim = AttackSimulator()
 
     def test_all_techniques_registered(self):
-        """Verify all 11 expected techniques are registered."""
+        """Verify all 12 expected techniques are registered."""
         expected = [
-            "T1003", "T1110", "T1059.001", "T1046", "T1070.001",
-            "T1543.003", "T1041", "T1059", "T1558.003", "T1021.001", "T1486",
+            "T1003", "T1110", "T1059.001", "T1046", "T1070.001", "T1543.003",
+            "T1041", "T1048.003", "T1059", "T1558.003", "T1021.001", "T1486",
         ]
         for tid in expected:
             assert tid in self.sim.tests, f"Technique {tid} not registered"
-        assert len(self.sim.tests) == 11
+        assert len(self.sim.tests) == 12
 
     def test_all_campaigns_registered(self):
         """Verify all 3 campaigns are registered."""
@@ -77,12 +77,13 @@ class TestAttackSimulator:
                     f"{tid} event {i} empty message"
                 assert isinstance(enrichment, dict), f"{tid} event {i} enrichment not dict"
 
-    def test_all_techniques_have_mitre_id(self):
-        """Every technique's events must include mitre_id in enrichment."""
+    def test_events_carry_no_detection_labels(self):
+        """Telemetry must not label itself; the detection engines decide what fired."""
         for tid, test in self.sim.tests.items():
             for event in test.events:
                 enrichment = event[3]
-                assert "mitre_id" in enrichment, f"{tid} missing mitre_id"
+                for key in ("rule_matched", "mitre_id", "mitre_tactic", "threat_score"):
+                    assert key not in enrichment, f"{tid} event pre-labels {key}"
 
     def test_run_test_valid_technique(self):
         """Running a valid technique should return results."""
@@ -91,6 +92,7 @@ class TestAttackSimulator:
         assert result["technique_id"] == "T1070.001"
         assert result["status"] == "COMPLETED"
         assert result["events_emitted"] == 2
+        assert "Log Tampering" in result["rules_fired"]
 
     def test_run_test_unknown_technique(self):
         """Running an unknown technique should return None."""
@@ -118,9 +120,9 @@ class TestAttackSimulator:
     def test_run_all_tests(self):
         """Run all tests and verify results."""
         results = self.sim.run_all_tests(delay=0)
-        assert len(results) == 11
+        assert len(results) == 12
         total_events = sum(r["events_emitted"] for r in results)
-        assert total_events > 50  # Should be ~70+ events
+        assert total_events > 50  # Should be ~85 events
 
     def test_credential_dumping_events(self):
         """T1003 should have Mimikatz-related events."""
@@ -135,18 +137,18 @@ class TestAttackSimulator:
         assert len(test.events) == 13
 
     def test_kerberoasting_events(self):
-        """T1558.003 should reference RC4 and Event ID 4769."""
+        """T1558.003 should be 4769 events with RC4 (0x17) ticket encryption."""
         test = self.sim.tests["T1558.003"]
         messages = [e[2] for e in test.events]
-        assert any("4769" in m for m in messages)
-        assert any("RC4" in m for m in messages)
+        assert all("Event ID 4769" in m for m in messages)
+        assert all("Ticket Encryption Type: 0x17" in m for m in messages)
 
     def test_ransomware_events(self):
         """T1486 should include encryption and ransom note events."""
         test = self.sim.tests["T1486"]
         messages = [e[2] for e in test.events]
-        assert any("encrypted" in m.lower() for m in messages)
-        assert any("ransom" in m.lower() for m in messages)
+        assert any(m.endswith(".encrypted") for m in messages)
+        assert any("README_DECRYPT" in m for m in messages)
 
     def test_list_tests(self, capsys):
         """list_tests() should print without errors."""
@@ -155,11 +157,11 @@ class TestAttackSimulator:
         assert "T1003" in captured.out
         assert "apt29" in captured.out
 
-    def test_detection_coverage_no_db(self):
-        """Coverage report should handle missing database gracefully."""
+    def test_detection_coverage_replays_engines(self):
+        """Coverage comes from replaying telemetry through the engines, not a database."""
         report = self.sim.get_detection_coverage()
-        # Should either return results or an error dict
-        assert isinstance(report, dict)
+        assert report["total_techniques"] == 12
+        assert report["gaps"] == 0, [t for t in report["techniques"] if t["status"] != "DETECTED"]
 
     def test_campaign_techniques_exist(self):
         """All techniques referenced in campaigns must exist in tests."""

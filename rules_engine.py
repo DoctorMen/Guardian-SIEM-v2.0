@@ -2,6 +2,9 @@
 Guardian SIEM v2.0 — Rules Engine
 Evaluates incoming events against configurable YAML-based detection rules.
 Supports regex pattern matching, threshold counting, and sliding windows.
+A threshold can be counted per entity (for example per source IP) with
+`group_by`, so five failures spread over five unrelated hosts don't add up
+to one brute-force alert.
 """
 
 import re
@@ -21,7 +24,7 @@ class RulesEngine:
             rules_path = os.path.join(base_dir, "config", "alert_rules.yaml")
         self.rules_path = rules_path
         self.rules = []
-        self._hit_tracker = defaultdict(list)  # rule_name -> list of timestamps
+        self._hit_tracker = defaultdict(list)  # (rule_name, group) -> list of timestamps
         self.load_rules()
 
     def load_rules(self):
@@ -43,13 +46,15 @@ class RulesEngine:
         self.load_rules()
         self._hit_tracker.clear()
 
-    def evaluate(self, source, message):
+    def evaluate(self, source, message, fields=None):
         """
         Evaluate an event against all active rules.
 
         Args:
             source: Event source (e.g., 'Network_IPS', 'Windows_EventLog')
             message: Event message text to match against
+            fields: Optional extracted fields (see field_extractor.py); a rule's
+                    `group_by` names the field its threshold is counted per
 
         Returns:
             List of matched rules with metadata, empty if no matches
@@ -72,16 +77,19 @@ class RulesEngine:
             rule_name = rule["name"]
             threshold = rule.get("threshold", 1)
             window = rule.get("window_seconds", 60)
+            group_by = rule.get("group_by")
+            group = str((fields or {}).get(group_by, "")) if group_by else ""
+            key = (rule_name, group)
 
             # Record this hit
-            self._hit_tracker[rule_name].append(now)
+            self._hit_tracker[key].append(now)
 
             # Prune old hits outside the window
-            self._hit_tracker[rule_name] = [
-                t for t in self._hit_tracker[rule_name] if now - t <= window
+            self._hit_tracker[key] = [
+                t for t in self._hit_tracker[key] if now - t <= window
             ]
 
-            hit_count = len(self._hit_tracker[rule_name])
+            hit_count = len(self._hit_tracker[key])
 
             if hit_count >= threshold:
                 matches.append({
@@ -93,21 +101,23 @@ class RulesEngine:
                     "hit_count": hit_count,
                     "threshold": threshold,
                     "window_seconds": window,
+                    "group_by": group_by or "",
+                    "group": group,
                     "matched_at": datetime.now().isoformat(),
                     "source": source,
                     "message_excerpt": message[:200],
                 })
                 # Reset counter after alert fires to prevent spam
-                self._hit_tracker[rule_name] = []
+                self._hit_tracker[key] = []
 
         return matches
 
     def get_stats(self):
         """Return current rule hit counters for dashboard display."""
-        return {
-            rule_name: len(timestamps)
-            for rule_name, timestamps in self._hit_tracker.items()
-        }
+        stats = defaultdict(int)
+        for (rule_name, _group), timestamps in self._hit_tracker.items():
+            stats[rule_name] += len(timestamps)
+        return dict(stats)
 
     def get_rules_summary(self):
         """Return a summary of all loaded rules."""

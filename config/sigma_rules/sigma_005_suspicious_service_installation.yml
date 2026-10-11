@@ -1,8 +1,11 @@
-title: Suspicious Service Installation
+title: Service Installed From a Suspicious Path
 id: d4e5f6a7-b8c9-0123-defa-234567890123
 status: stable
-level: medium
-description: Detects installation of a new service which may indicate persistence.
+level: high
+description: >
+    Detects a new service (event 7045) whose binary lives in a user-writable
+    folder or that is launched through a shell. Installers put services under
+    Program Files or System32; malware installed for persistence often doesn't.
 author: Guardian SIEM
 date: 2025/01/01
 tags:
@@ -13,8 +16,17 @@ logsource:
   service: system
 detection:
   selection:
-    EventID:
-    - 7045
-  condition: selection
+    EventID: 7045
+  suspicious_path:
+    ImagePath|contains:
+    - '\ProgramData\'
+    - '\Users\Public\'
+    - '\AppData\'
+    - '\Temp\'
+    - 'powershell'
+    - 'cmd.exe /c'
+    - 'cmd /c'
+  condition: selection and suspicious_path
 falsepositives:
 - Legitimate software installation
+    - Poorly packaged software that installs services under ProgramData

@@ -28,6 +28,7 @@ from threat_intel import ThreatIntel
 from geoip_lookup import GeoIPLookup
 from alert_manager import AlertManager
 from sigma_engine import SigmaEngine
+from detection_pipeline import Detector
 from yara_scanner import YaraScanner
 from active_response import ActiveResponse
 from report_generator import ReportGenerator
@@ -65,6 +66,7 @@ threat_intel = ThreatIntel()
 geoip = GeoIPLookup()
 alert_manager = AlertManager()
 sigma_engine = SigmaEngine()
+detector = Detector(rules_engine=rules_engine, sigma_engine=sigma_engine)
 yara_scanner = YaraScanner()
 active_response = ActiveResponse()
 report_gen = ReportGenerator()
@@ -94,29 +96,8 @@ def process_event(event):
     ip_match = re.search(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', message)
     src_ip = ip_match.group(1) if ip_match else ""
 
-    # Native Rules Engine evaluation
-    matches = rules_engine.evaluate(source, message)
-
-    # SIGMA Rules evaluation
-    sigma_matches = sigma_engine.evaluate({
-        "source": source, "message": message,
-        "severity": event.get("severity", ""),
-    })
-    for sm in sigma_matches:
-        # Merge SIGMA matches into the same format
-        matches.append({
-            "rule_name": f"SIGMA: {sm['rule_name']}",
-            "description": sm.get("description", ""),
-            "severity": sm["severity"],
-            "mitre_id": sm.get("mitre_id", ""),
-            "mitre_tactic": sm.get("mitre_tactic", ""),
-            "hit_count": 1,
-            "threshold": 1,
-            "window_seconds": 0,
-            "matched_at": sm["matched_at"],
-            "source": source,
-            "message_excerpt": message[:200],
-        })
+    # Field extraction, native rules and SIGMA (detection_pipeline.py)
+    _fields, matches = detector.evaluate(source, message, event.get("severity", ""))
 
     for match in matches:
         # MITRE enrichment

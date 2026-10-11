@@ -185,3 +185,29 @@ Default syslog listeners to port 1514 (both UDP and TCP).
 **Trade-offs accepted:**
 - Network devices with hardcoded syslog destination port 514 will need reconfiguration or a port-forwarding rule.
 - Configurable via `config.yaml` — users who need port 514 can change it and run with elevated privileges.
+
+---
+
+## ADR-008: Prove Detections by Replaying Unlabelled Telemetry
+
+**Date:** 2026-10-11  
+**Status:** Accepted  
+**Context:**  
+The attack simulator used to attach the rule name and ATT&CK ID to each event it generated (`rule_matched`, `mitre_id`) and wrote them straight to the event store. The coverage report then counted those labels. It reported full coverage, but the detection engines never saw the events. Replaying the same messages through the engines showed that 10 of the 12 Sigma rules could not fire at all: they select on fields such as `EventID`, or filter on a logsource category such as `process_creation`, and nothing in the pipeline supplied either.
+
+**Decision:**  
+1. Telemetry carries no labels. The simulator emits log lines shaped like the real source (Sysmon, Security, PowerShell Operational, flow and DNS logs).
+2. One pipeline, `detection_pipeline.Detector` (field extraction, YAML rules, Sigma), is used by the dashboard, the simulator and the validator.
+3. `detection_validator.py` replays every atomic test and fails if no rule mapped to that technique fires, or if a technique's `expected_rules` stop firing.
+4. The same run replays `config/validation/benign_events.yml` and fails on any alert. Each benign case is a false positive the rules once produced.
+5. CI runs `detection_validator.py --check`, which also fails if the committed coverage report is stale.
+
+**Reasoning:**
+1. **A test that can't fail proves nothing.** Labels written by the generator always "match". Only an engine decision can be wrong, so only an engine decision is worth testing.
+2. **Detection and false positives are one problem.** Every rule tightened to pass the benign set (LSASS access rights, Kerberos computer accounts, per-source thresholds) was a change a SOC would have asked for after the first noisy week.
+3. **The report stays honest by construction.** `docs/detection-coverage.md` is generated, checked in, and verified in CI, so it cannot drift from what the rules actually do.
+
+**Trade-offs accepted:**
+- The telemetry is hand-written to match real formats; it is not a recording of a live attack. Replaying public attack datasets is the next step.
+- Thresholds are wall-clock based, so replay proves rule logic, not timing.
+- Two single-event Sigma rules (failed logon, RDP logon) were removed: on their own they fire on normal activity. Brute force and RDP lateral movement are counted per source address by the YAML engine (`group_by`).
